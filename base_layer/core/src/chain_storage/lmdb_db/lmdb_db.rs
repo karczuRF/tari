@@ -163,7 +163,7 @@ const LMDB_DB_VALIDATOR_NODES: &str = "validator_nodes";
 const LMDB_DB_VALIDATOR_NODES_MAPPING: &str = "validator_nodes_mapping";
 const LMDB_DB_TEMPLATE_REGISTRATIONS: &str = "template_registrations";
 const LMDB_DB_UTXO_SMT: &str = "utxo_smt";
-const SMT_CACHE_PERIOD: u64 = 1000;
+const SMT_CACHE_PERIOD: u64 = 500;
 
 /// HeaderHash(32), mmr_pos(8), hash(32)
 type KernelKey = CompositeKey<72>;
@@ -174,6 +174,7 @@ pub fn create_lmdb_database<P: AsRef<Path>>(
     path: P,
     config: LMDBConfig,
     prune_interval: u64,
+    pruning_horizon: u64,
     consensus_manager: ConsensusManager,
 ) -> Result<LMDBDatabase, ChainStorageError> {
     let flags = db::CREATE;
@@ -218,7 +219,13 @@ pub fn create_lmdb_database<P: AsRef<Path>>(
         .build()
         .map_err(|err| ChainStorageError::CriticalError(format!("Could not create LMDB store:{}", err)))?;
     debug!(target: LOG_TARGET, "LMDB database creation successful");
-    LMDBDatabase::new(&lmdb_store, file_lock, consensus_manager, prune_interval)
+    LMDBDatabase::new(
+        &lmdb_store,
+        file_lock,
+        consensus_manager,
+        prune_interval,
+        pruning_horizon,
+    )
 }
 
 /// This is a lmdb-based blockchain database for persistent storage of the chain state.
@@ -291,11 +298,13 @@ impl LMDBDatabase {
         file_lock: File,
         consensus_manager: ConsensusManager,
         prune_interval: u64,
+        pruning_horizon: u64,
     ) -> Result<Self, ChainStorageError> {
         let env = store.env();
-        let smt_cache_period = if prune_interval == 0 {
+        let smt_cache_period = if pruning_horizon == 0 || prune_interval == 0 {
             SMT_CACHE_PERIOD
         } else {
+            // we make sure we run this in the pruning interval, 2 is just a same number here.
             prune_interval / 2
         };
 
@@ -461,6 +470,10 @@ impl LMDBDatabase {
                     // for security we check that the best block does exist, and we check the previous value
                     // we dont want to check this if the prev block has never been set, this means a empty hash of 32
                     // bytes.
+                    debug!(target: LOG_TARGET,
+                        "Setting new best block as height: {}",
+                        height
+                    );
                     if *height > 0 {
                         let prev = fetch_best_block(&write_txn, &self.metadata_db)?;
                         if *expected_prev_best_block != prev {
@@ -1771,7 +1784,7 @@ impl LMDBDatabase {
 
         match lmdb_replace(txn, &self.utxo_smt, &k.as_u32(), smt, Some(estimated_bytes)) {
             Ok(_) => {
-                trace!(
+                debug!(
                 target: LOG_TARGET,
                     "Inserted ~{} MB with key '{}' into '{}' (size {}) in {:.2?}",
                     estimated_bytes / BYTES_PER_MB,
