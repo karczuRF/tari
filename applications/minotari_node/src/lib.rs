@@ -92,6 +92,7 @@ pub async fn run_base_node(
         mining_enabled: false,
         second_layer_grpc_enabled: false,
         disable_splash_screen: false,
+        libtor_data_dir: None,
     };
 
     run_base_node_with_cli(node_identity, config, cli, shutdown).await
@@ -169,7 +170,6 @@ pub async fn run_base_node_with_cli(
 
     info!(target: LOG_TARGET, "Minotari base node has STARTED");
     main_loop.cli_loop(cli.disable_splash_screen).await;
-
     ctx.wait_for_shutdown().await;
 
     println!("Goodbye!");

@@ -152,7 +152,12 @@ fn main_inner() -> Result<(), ExitError> {
     // This is currently only possible on linux/macos
     #[cfg(all(unix, feature = "libtor"))]
     if config.base_node.use_libtor && config.base_node.p2p.transport.is_tor() {
-        let tor = Tor::initialize()?;
+        let data_dir = if let Some(dir) = cli.libtor_data_dir.clone() {
+            dir.join("libtor").join("base_node")
+        } else {
+            cli.common.get_base_path().join("libtor").join("base_node")
+        };
+        let tor = Tor::initialize(data_dir)?;
         tor.update_comms_transport(&mut config.base_node.p2p.transport)?;
         tor.run_background();
         debug!(
