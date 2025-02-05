@@ -145,7 +145,10 @@ use crate::{
         utc::utc_duration_since,
     },
     util::watch::Watch,
-    utxo_scanner_service::RECOVERY_KEY,
+    utxo_scanner_service::{
+        handle::{UtxoScannerEvent, UtxoScannerHandle},
+        RECOVERY_KEY,
+    },
     OperationId,
 };
 
@@ -261,6 +264,7 @@ where
         shutdown_signal: ShutdownSignal,
         base_node_service: BaseNodeServiceHandle,
         wallet_type: Arc<WalletType>,
+        utxo_scanner_handle: UtxoScannerHandle,
     ) -> Result<Self, TransactionServiceError> {
         // Collect the resources that all protocols will need so that they can be neatly cloned as the protocols are
         // spawned.
@@ -295,6 +299,7 @@ where
             shutdown_signal,
             consensus_manager: consensus_manager.clone(),
             wallet_type,
+            utxo_scanner_handle,
         };
         let power_mode = PowerMode::default();
         let timeout = match power_mode {
@@ -388,6 +393,7 @@ where
 
         let mut base_node_service_event_stream = self.base_node_service.get_event_stream();
         let mut output_manager_event_stream = self.resources.output_manager_service.get_event_stream();
+        let mut utxo_scanner_events = self.resources.utxo_scanner_handle.get_event_receiver();
 
         debug!(target: LOG_TARGET, "Transaction Service started");
         loop {
@@ -401,9 +407,15 @@ where
                 // Base Node Monitoring Service event
                 event = base_node_service_event_stream.recv() => {
                     match event {
-                        Ok(msg) => self.handle_base_node_service_event(msg, &mut transaction_validation_protocol_handles).await,
+                        Ok(msg) => self.handle_base_node_service_event(msg).await,
                         Err(e) => debug!(target: LOG_TARGET, "Lagging read on base node event broadcast channel: {}", e),
                     };
+                },
+                event = utxo_scanner_events.recv() => {
+                    match event {
+                        Ok(msg) => self.handle_utxo_scanner_service_event(msg, &mut transaction_validation_protocol_handles).await,
+                        Err(e) => debug!(target: LOG_TARGET, "Lagging read on utxo scanner event broadcast channel: {}", e),
+                    }
                 },
                 //Incoming request
                 Some(request_context) = request_stream.next() => {
@@ -1040,18 +1052,31 @@ where
         });
     }
 
-    async fn handle_base_node_service_event(
-        &mut self,
-        event: Arc<BaseNodeEvent>,
-        transaction_validation_join_handles: &mut FuturesUnordered<
-            JoinHandle<Result<OperationId, TransactionServiceProtocolError<OperationId>>>,
-        >,
-    ) {
+    async fn handle_base_node_service_event(&mut self, event: Arc<BaseNodeEvent>) {
         match (*event).clone() {
             BaseNodeEvent::BaseNodeStateChanged(_state) => {
                 trace!(target: LOG_TARGET, "Received BaseNodeStateChanged event, but igoring",);
             },
             BaseNodeEvent::NewBlockDetected(_hash, height) => {
+                self.last_seen_tip_height = Some(height);
+            },
+        }
+    }
+
+    async fn handle_utxo_scanner_service_event(
+        &mut self,
+        event: UtxoScannerEvent,
+        transaction_validation_join_handles: &mut FuturesUnordered<
+            JoinHandle<Result<OperationId, TransactionServiceProtocolError<OperationId>>>,
+        >,
+    ) {
+        match event {
+            UtxoScannerEvent::ConnectingToBaseNode(_node_id) => {},
+            UtxoScannerEvent::ConnectedToBaseNode(_node_id, _duration) => {},
+            UtxoScannerEvent::ConnectionFailedToBaseNode { .. } => {},
+            UtxoScannerEvent::ScanningRoundFailed { .. } => {},
+            UtxoScannerEvent::Progress { .. } => {},
+            UtxoScannerEvent::Completed { .. } => {
                 let _operation_id = self
                     .start_transaction_validation_protocol(transaction_validation_join_handles)
                     .await
@@ -1059,9 +1084,8 @@ where
                         warn!(target: LOG_TARGET, "Error validating  txos: {:?}", e);
                         e
                     });
-
-                self.last_seen_tip_height = Some(height);
             },
+            UtxoScannerEvent::ScanningFailed => {},
         }
     }
 
@@ -3383,6 +3407,9 @@ where
 
         let mut base_node_watch = self.connectivity().get_current_base_node_watcher();
         let validation_in_progress = self.validation_in_progress.clone();
+
+        let mut utxo_scanner_service_event_stream = self.resources.utxo_scanner_handle.get_event_receiver();
+
         let join_handle = tokio::spawn(async move {
             let mut _lock = validation_in_progress.try_lock().map_err(|_| {
                 debug!(
@@ -3391,20 +3418,27 @@ where
                 );
                 TransactionServiceProtocolError::new(id, TransactionServiceError::TransactionValidationInProgress)
             })?;
-            let exec_fut = protocol.execute();
-            tokio::pin!(exec_fut);
-            loop {
-                tokio::select! {
-                    result = &mut exec_fut => {
-                       return result;
-                    },
-                    _ = base_node_watch.changed() => {
-                         if let Some(selected_peer) = base_node_watch.borrow().as_ref() {
-                            if selected_peer.get_current_peer().node_id != current_base_node {
-                                debug!(target: LOG_TARGET, "Base node changed, exiting transaction validation protocol");
-                                return Err(TransactionServiceProtocolError::new(id, TransactionServiceError::BaseNodeChanged {
-                                    task_name: "transaction validation_protocol",
-                                }));
+            'outer: loop {
+                let local_run = protocol.clone();
+                let exec_fut = local_run.execute();
+                tokio::pin!(exec_fut);
+                loop {
+                    tokio::select! {
+                        result = &mut exec_fut => {
+                           return result;
+                        },
+                        event = utxo_scanner_service_event_stream.recv() => {
+                            if let Ok(UtxoScannerEvent::Completed{..}) = event {
+                                debug!(target: LOG_TARGET, "TXO Validation Protocol (Id: {}) resetting because base node height changed", id);
+                                continue 'outer;
+                            }
+                        }
+                        _ = base_node_watch.changed() => {
+                             if let Some(selected_peer) = base_node_watch.borrow().as_ref() {
+                                if selected_peer.get_current_peer().node_id != current_base_node {
+                                    debug!(target: LOG_TARGET, "Base node changed, restarting transaction validation protocol");
+                                  continue 'outer;
+                                }
                             }
                         }
                     }
@@ -3843,6 +3877,7 @@ pub struct TransactionServiceResources<TBackend, TWalletConnectivity, TKeyManage
     pub config: TransactionServiceConfig,
     pub shutdown_signal: ShutdownSignal,
     pub wallet_type: Arc<WalletType>,
+    pub utxo_scanner_handle: UtxoScannerHandle,
 }
 
 #[derive(Default, Clone, Copy)]

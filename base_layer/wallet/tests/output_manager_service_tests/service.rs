@@ -40,6 +40,8 @@ use minotari_wallet::{
     },
     test_utils::create_consensus_constants,
     transaction_service::handle::TransactionServiceHandle,
+    util::watch::Watch,
+    utxo_scanner_service::handle::UtxoScannerHandle,
 };
 use rand::{rngs::OsRng, RngCore};
 use tari_common::configuration::Network;
@@ -92,7 +94,6 @@ use crate::support::{
     data::get_temp_sqlite_database_connection,
     utils::{make_input, make_input_with_features},
 };
-
 fn default_features_and_scripts_size_byte_size() -> std::io::Result<usize> {
     Ok(TransactionWeight::latest().round_up_features_and_scripts_size(
         OutputFeatures::default().get_serialized_size()? + TariScript::default().get_serialized_size()?,
@@ -107,7 +108,7 @@ struct TestOmsService {
     pub mock_rpc_service: MockRpcServer<BaseNodeWalletRpcServer<BaseNodeWalletRpcMockService>>,
     pub node_id: Arc<NodeIdentity>,
     pub base_node_wallet_rpc_mock_state: BaseNodeWalletRpcMockState,
-    pub node_event: broadcast::Sender<Arc<BaseNodeEvent>>,
+    pub _node_event: broadcast::Sender<Arc<BaseNodeEvent>>,
     pub key_manager_handle: MemoryDbKeyManager,
 }
 
@@ -162,6 +163,12 @@ async fn setup_output_manager_service<T: OutputManagerBackend + 'static>(
 
     let key_manager = create_memory_db_key_manager().unwrap();
 
+    let (event_sender, _) = broadcast::channel(200);
+    let recovery_message_watch = Watch::new("unset".to_string());
+    let one_sided_message_watch = Watch::new("unset".to_string());
+
+    let scanner_handle = UtxoScannerHandle::new(event_sender.clone(), one_sided_message_watch, recovery_message_watch);
+
     let output_manager_service = OutputManagerService::new(
         OutputManagerServiceConfig { ..Default::default() },
         oms_request_receiver,
@@ -174,6 +181,7 @@ async fn setup_output_manager_service<T: OutputManagerBackend + 'static>(
         Network::LocalNet,
         wallet_connectivity_mock.clone(),
         key_manager.clone(),
+        scanner_handle,
     )
     .await
     .unwrap();
@@ -189,7 +197,7 @@ async fn setup_output_manager_service<T: OutputManagerBackend + 'static>(
         mock_rpc_service: mock_server,
         node_id: server_node_identity,
         base_node_wallet_rpc_mock_state: rpc_service_state,
-        node_event: event_publisher_bns,
+        _node_event: event_publisher_bns,
         key_manager_handle: key_manager,
     }
 }
@@ -226,6 +234,10 @@ pub async fn setup_oms_with_bn_state<T: OutputManagerBackend + 'static>(
     task::spawn(mock_base_node_service.run());
     let connectivity = create_wallet_connectivity_mock();
     let key_manager = create_memory_db_key_manager().unwrap();
+    let (event_sender, _) = broadcast::channel(200);
+    let recovery_message_watch = Watch::new("unset".to_string());
+    let one_sided_message_watch = Watch::new("unset".to_string());
+    let scanner_handle = UtxoScannerHandle::new(event_sender.clone(), one_sided_message_watch, recovery_message_watch);
     let output_manager_service = OutputManagerService::new(
         OutputManagerServiceConfig { ..Default::default() },
         oms_request_receiver,
@@ -238,6 +250,7 @@ pub async fn setup_oms_with_bn_state<T: OutputManagerBackend + 'static>(
         Network::LocalNet,
         connectivity,
         key_manager.clone(),
+        scanner_handle,
     )
     .await
     .unwrap();
@@ -1822,31 +1835,7 @@ async fn test_txo_validation() {
     oms.base_node_wallet_rpc_mock_state
         .set_query_deleted_response(query_deleted_response.clone());
 
-    // Trigger validation through a base_node_service event
-    oms.node_event
-        .send(Arc::new(BaseNodeEvent::NewBlockDetected(
-            (*block5_header_reorg.hash()).into(),
-            5,
-        )))
-        .unwrap();
-
-    let _result = oms
-        .base_node_wallet_rpc_mock_state
-        .wait_pop_get_header_by_height_calls(2, Duration::from_secs(60))
-        .await
-        .unwrap();
-
-    let _utxo_query_calls = oms
-        .base_node_wallet_rpc_mock_state
-        .wait_pop_utxo_query_calls(1, Duration::from_secs(60))
-        .await
-        .unwrap();
-
-    let _query_deleted_calls = oms
-        .base_node_wallet_rpc_mock_state
-        .wait_pop_query_deleted(1, Duration::from_secs(60))
-        .await
-        .unwrap();
+    oms.output_manager_handle.validate_txos().await.unwrap();
 
     // This is needed on a fast computer, otherwise the balance have not been updated correctly yet with the next
     // step
