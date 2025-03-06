@@ -378,6 +378,70 @@ impl Default for TariAddress {
     }
 }
 
+pub mod tari_address_json_bs58 {
+    use std::fmt;
+
+    use serde::{
+        de::{Error, Visitor},
+        Deserializer,
+        Serializer,
+    };
+
+    use crate::tari_address::TariAddress;
+
+    /// Serializes a [`TariAddress`] to a base58 string or a binary array.
+    pub fn serialize<S>(address: &TariAddress, ser: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        if ser.is_human_readable() {
+            ser.serialize_str(&address.to_base58())
+        } else {
+            ser.serialize_bytes(&address.to_vec())
+        }
+    }
+
+    /// Serializes a [`TariAddress`] from a base58 string or a binary array.
+    pub fn deserialize<'de, D>(de: D) -> Result<TariAddress, D::Error>
+    where D: Deserializer<'de> {
+        let visitor = Base58Visitor::default();
+        if de.is_human_readable() {
+            de.deserialize_string(visitor)
+        } else {
+            de.deserialize_bytes(visitor)
+        }
+    }
+    #[derive(Default)]
+    struct Base58Visitor {}
+
+    impl<'de> Visitor<'de> for Base58Visitor {
+        type Value = TariAddress;
+
+        fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            fmt.write_str("Expecting a binary array or Base58 string")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where E: Error {
+            let address = TariAddress::from_base58(v).map_err(|e| E::custom(e.to_string()))?;
+            Ok(address)
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+        where E: Error {
+            self.visit_str(&v)
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where E: Error {
+            TariAddress::from_bytes(v).map_err(|e| E::custom(e.to_string()))
+        }
+
+        fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
+        where E: Error {
+            self.visit_bytes(v)
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use tari_crypto::keys::SecretKey;
