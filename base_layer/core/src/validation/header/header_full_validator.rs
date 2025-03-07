@@ -22,7 +22,7 @@
 
 use std::cmp;
 
-use log::warn;
+use log::{debug, warn};
 use tari_common_types::types::FixedHash;
 use tari_utilities::{epoch_time::EpochTime, hex::Hex};
 
@@ -40,6 +40,22 @@ use crate::{
 };
 
 pub const LOG_TARGET: &str = "c::val::header_full_validator";
+
+// 999785e3bb6a43189c7236de7c9720df27d56f6b9724cd22f5115a097d3f770e and
+// 39d1449e85bf2e3eb6986b05d7991ce1823cb3e1769f11cdc0c07192f344b408 are bad blocks on NEXTNET that bypassed
+// validation due to a bug in saving Monero seeds. The block uses a randomX  VM key of
+// 91ef83186cefaa646dc4c6e950e68e4debab52b4f4a9b7f465891e91fe5f6ce4, this key was used between height 2729 and 843 which
+// is about what you would expect from the Monero consensus. These blocks (26320 and 26440) reuses this key, which is a
+// violation of the Monero consensus rules. But in order to keep the network on the same chain, we whitelist this block
+// to bypass validation as that is the only validation it has failed.
+// ToDo empty out on each reset
+#[cfg(tari_target_network_nextnet)]
+pub const WHITELISTED_HEADERS: [&str; 2] = [
+    "999785e3bb6a43189c7236de7c9720df27d56f6b9724cd22f5115a097d3f770e",
+    "39d1449e85bf2e3eb6986b05d7991ce1823cb3e1769f11cdc0c07192f344b408",
+];
+#[cfg(not(tari_target_network_nextnet))]
+pub const WHITELISTED_HEADERS: [&str; 0] = [];
 
 #[derive(Clone)]
 pub struct HeaderFullValidator {
@@ -70,16 +86,25 @@ impl<B: BlockchainBackend> HeaderChainLinkedValidator<B> for HeaderFullValidator
     ) -> Result<AchievedTargetDifficulty, ValidationError> {
         let constants = self.rules.consensus_constants(header.height);
 
-        check_not_bad_block(db, header.hash())?;
-        check_blockchain_version(constants, header.version)?;
-        check_height(header, prev_header)?;
-        check_prev_hash(header, prev_header)?;
+        // dont run these checks for blocks we have whitelisted
+        if WHITELISTED_HEADERS.contains(&header.hash().to_hex().as_str()) {
+            debug!(
+            target: LOG_TARGET,
+            "Bypassing checks for:{}({}) because block is whitelisted",
+            header.height,header.hash()
+            );
+        } else {
+            check_not_bad_block(db, header.hash())?;
+            check_blockchain_version(constants, header.version)?;
+            check_height(header, prev_header)?;
+            check_prev_hash(header, prev_header)?;
 
-        sanity_check_timestamp_count(header, prev_timestamps, constants)?;
-        check_header_timestamp_greater_than_median(header, prev_timestamps)?;
+            sanity_check_timestamp_count(header, prev_timestamps, constants)?;
+            check_header_timestamp_greater_than_median(header, prev_timestamps)?;
 
-        check_timestamp_ftl(header, &self.rules)?;
-        check_pow_data(header, &self.rules, db)?;
+            check_timestamp_ftl(header, &self.rules)?;
+            check_pow_data(header, &self.rules, db)?;
+        }
 
         let achieved_target = if let Some(target) = target_difficulty {
             check_target_difficulty(

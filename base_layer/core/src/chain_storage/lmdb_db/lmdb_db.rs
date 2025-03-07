@@ -19,7 +19,6 @@
 // SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 use std::{
     cmp::max,
     convert::TryFrom,
@@ -126,6 +125,7 @@ use crate::{
     },
     consensus::{ConsensusConstants, ConsensusManager},
     output_mr_hash_from_smt,
+    proof_of_work::{monero_rx::MoneroPowData, PowAlgorithm},
     transactions::{
         aggregated_body::AggregateBody,
         transaction_components::{
@@ -860,6 +860,22 @@ impl LMDBDatabase {
             )));
         } else {
             // we can continue
+        }
+
+        if header.pow_algo() == PowAlgorithm::RandomX {
+            let monero_header = MoneroPowData::from_header(header, &self.consensus_manager).map_err(|e| {
+                ChainStorageError::InvalidArguments {
+                    func: "insert_best_block",
+                    arg: "block",
+                    message: format!("block contained invalid or malformed monero PoW data: {}", e),
+                }
+            })?;
+            let vm_key = monero_header.randomx_key.to_vec();
+            trace!(
+                target: LOG_TARGET,
+                "inserting monero vm key: {} for height {}",vm_key.to_hex(), header.height
+            );
+            self.insert_monero_seed_height(txn, &vm_key, header.height)?;
         }
 
         lmdb_insert(
@@ -2895,7 +2911,7 @@ impl fmt::Display for MetadataValue {
 }
 
 fn run_migrations(db: &LMDBDatabase) -> Result<(), ChainStorageError> {
-    const MIGRATION_VERSION: u64 = 2;
+    const MIGRATION_VERSION: u64 = 3;
     let txn = db.read_transaction()?;
 
     let k = MetadataKey::MigrationVersion;
@@ -2915,6 +2931,13 @@ fn run_migrations(db: &LMDBDatabase) -> Result<(), ChainStorageError> {
         if migrate_from_version == 1 {
             let txn = db.write_transaction()?;
             info!(target: LOG_TARGET, "Clearing bad blocks list due to median timestamp bug in nextnet");
+            let rows_affected = lmdb_clear(&txn, &db.bad_blocks)?;
+            txn.commit()?;
+            info!(target: LOG_TARGET, "Removed {} rows from bad blocks", rows_affected);
+        }
+        if migrate_from_version == 2 {
+            let txn = db.write_transaction()?;
+            info!(target: LOG_TARGET, "Clearing bad blocks list due to bypass validation of monero seed ");
             let rows_affected = lmdb_clear(&txn, &db.bad_blocks)?;
             txn.commit()?;
             info!(target: LOG_TARGET, "Removed {} rows from bad blocks", rows_affected);
