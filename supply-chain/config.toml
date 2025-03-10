@@ -356,7 +356,7 @@ version = "0.24.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.cc]]
-version = "1.2.3"
+version = "1.2.16"
 criteria = "safe-to-deploy"
 
 [[exemptions.cfb-mode]]
@@ -1744,7 +1744,7 @@ version = "0.4.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ring]]
-version = "0.17.8"
+version = "0.17.13"
 criteria = "safe-to-deploy"
 
 [[exemptions.ripemd]]
