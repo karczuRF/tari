@@ -158,7 +158,7 @@ impl ChainMetadataService {
             },
             // New ping round has begun
             LivenessEvent::PingRoundBroadcast(num_peers) => {
-                debug!(
+                trace!(
                     target: LOG_TARGET,
                     "New chain metadata round sent to {} peer(s)", num_peers
                 );
