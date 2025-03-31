@@ -35,24 +35,15 @@ use tokio::sync::RwLock;
 use crate::base_node::metrics;
 use crate::{
     base_node::comms_interface::{
-        error::CommsInterfaceError,
-        local_interface::BlockEventSender,
-        FetchMempoolTransactionsResponse,
-        NodeCommsRequest,
-        NodeCommsResponse,
-        OutboundNodeCommsInterface,
+        error::CommsInterfaceError, local_interface::BlockEventSender, FetchMempoolTransactionsResponse,
+        NodeCommsRequest, NodeCommsResponse, OutboundNodeCommsInterface,
     },
     blocks::{Block, BlockBuilder, BlockHeader, BlockHeaderValidationError, ChainBlock, NewBlock, NewBlockTemplate},
     chain_storage::{async_db::AsyncBlockchainDb, BlockAddResult, BlockchainBackend, ChainStorageError},
     consensus::{ConsensusConstants, ConsensusManager},
     mempool::Mempool,
     proof_of_work::{
-        randomx_difficulty,
-        randomx_factory::RandomXFactory,
-        sha3x_difficulty,
-        Difficulty,
-        PowAlgorithm,
-        PowError,
+        randomx_difficulty, randomx_factory::RandomXFactory, sha3x_difficulty, Difficulty, PowAlgorithm, PowError,
     },
     transactions::aggregated_body::AggregateBody,
     validation::{helpers, ValidationError},
@@ -93,7 +84,8 @@ pub struct InboundNodeCommsHandlers<B> {
 }
 
 impl<B> InboundNodeCommsHandlers<B>
-where B: BlockchainBackend + 'static
+where
+    B: BlockchainBackend + 'static,
 {
     /// Construct a new InboundNodeCommsInterface.
     pub fn new(
@@ -272,7 +264,7 @@ where B: BlockchainBackend + 'static
                 // this will wait a max of 150ms by default before returning anyway with a potential broken template
                 // We need to ensure the mempool has seen the latest base node height before we can be confident the
                 // template is correct
-                while !is_mempool_synced && start.elapsed().as_millis() < MAX_MEMPOOL_TIMEOUT.into() {
+                while !is_mempool_synced && start.elapsed().as_millis() < Into::<u128>::into(MAX_MEMPOOL_TIMEOUT) {
                     if best_block_header.hash() == &last_seen_hash || last_seen_hash == FixedHash::default() {
                         is_mempool_synced = true;
                     } else {
