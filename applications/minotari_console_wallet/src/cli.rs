@@ -33,7 +33,10 @@ use minotari_app_utilities::{common_cli_args::CommonCliArgs, utilities::UniPubli
 use tari_common::configuration::{ConfigOverrideProvider, Network};
 use tari_common_types::tari_address::TariAddress;
 use tari_comms::multiaddr::Multiaddr;
-use tari_core::transactions::{tari_amount, tari_amount::MicroMinotari};
+use tari_core::transactions::{
+    tari_amount::{self, MicroMinotari},
+    transaction_components::TransactionOutput,
+};
 use tari_key_manager::SeedWords;
 use tari_utilities::{
     hex::{Hex, HexError},
@@ -172,6 +175,12 @@ pub enum CliCommands {
     Sync(SyncArgs),
     ExportViewKeyAndSpendKey(ExportViewKeyAndSpendKeyArgs),
     ImportPaperWallet(ImportPaperWalletArgs),
+    SendMultisig(SendMultisigArgs),
+    SendMultisigStart(SendMultisigStartSessionArgs),
+    SendMultisigStartParty(PreMineSpendPartyDetailsArgs),
+    SendMultisigEncumber(PreMineSpendEncumberAggregateUtxoArgs),
+    SendMultisigSigs(PreMineSpendInputOutputSigArgs),
+    SendMultisigSpendTx(PreMineSpendAggregateTransactionArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -204,6 +213,16 @@ pub struct PreMineStartSessionArgs {
     pub verify_unspent_outputs: bool,
     #[clap(long)]
     pub use_pre_mine_input_file: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct SendMultisigStartSessionArgs {
+    #[clap(long, default_value = "1")]
+    pub fee_per_gram: MicroMinotari,
+    #[clap(long)]
+    pub recipient_info: Vec<CliRecipientInfo>,
+    #[clap(long, default_value = "true")]
+    pub use_utxo_list_input_file: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -469,4 +488,12 @@ pub struct RegisterValidatorNodeArgs {
 pub struct SyncArgs {
     #[clap(short, long, default_value = "0")]
     pub sync_to_height: u64,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct SendMultisigArgs {
+    pub amount: MicroMinotari,
+    pub destination: TariAddress,
+    #[clap(short, long, default_value = "<No message>")]
+    pub payment_id: String,
 }

@@ -51,9 +51,7 @@ use minotari_wallet::{
         storage::models::WalletTransaction,
     },
     utxo_scanner_service::handle::UtxoScannerEvent,
-    TransactionStage,
-    WalletConfig,
-    WalletSqlite,
+    TransactionStage, WalletConfig, WalletSqlite,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::Sha256;
@@ -65,15 +63,8 @@ use tari_common_types::{
     tari_address::TariAddress,
     transaction::TxId,
     types::{
-        CompressedCommitment,
-        CompressedPublicKey,
-        FixedHash,
-        HashOutput,
-        PrivateKey,
-        Signature,
-        UncompressedCommitment,
-        UncompressedPublicKey,
-        UncompressedSignature,
+        CompressedCommitment, CompressedPublicKey, FixedHash, HashOutput, PrivateKey, Signature,
+        UncompressedCommitment, UncompressedPublicKey, UncompressedSignature,
     },
     wallet_types::WalletType,
 };
@@ -92,25 +83,15 @@ use tari_core::{
         tari_amount::{uT, MicroMinotari, Minotari},
         transaction_components::{
             encrypted_data::{PaymentId, TxType},
-            EncryptedData,
-            OutputFeatures,
-            Transaction,
-            TransactionInput,
-            TransactionInputVersion,
-            TransactionKernel,
-            TransactionOutput,
-            TransactionOutputVersion,
-            UnblindedOutput,
-            WalletOutput,
+            EncryptedData, OutputFeatures, Transaction, TransactionInput, TransactionInputVersion, TransactionKernel,
+            TransactionOutput, TransactionOutputVersion, UnblindedOutput, WalletOutput,
         },
         transaction_key_manager::{TariKeyId, TransactionKeyManagerInterface},
         CryptoFactories,
     },
 };
 use tari_crypto::{
-    commitment::HomomorphicCommitmentFactory,
-    dhke::DiffieHellmanSharedSecret,
-    ristretto::RistrettoSecretKey,
+    commitment::HomomorphicCommitmentFactory, dhke::DiffieHellmanSharedSecret, ristretto::RistrettoSecretKey,
 };
 use tari_key_manager::{cipher_seed::CipherSeed, SeedWords};
 use tari_p2p::{auto_update::AutoUpdateConfig, peer_seeds::SeedPeer, PeerSeedsConfig};
@@ -126,27 +107,12 @@ use super::error::CommandError;
 use crate::{
     automation::{
         utils::{
-            create_pre_mine_output_dir,
-            get_file_name,
-            move_session_file_to_session_dir,
-            out_dir,
-            read_and_verify,
-            read_session_info,
-            read_verify_session_info,
-            write_json_object_to_file_as_line,
-            write_to_json_file,
+            create_pre_mine_output_dir, get_file_name, move_session_file_to_session_dir, out_dir, read_and_verify,
+            read_session_info, read_verify_session_info, write_json_object_to_file_as_line, write_to_json_file,
         },
-        PreMineSpendStep1SessionInfo,
-        PreMineSpendStep2OutputsForLeader,
-        PreMineSpendStep2OutputsForSelf,
-        PreMineSpendStep3OutputsForParties,
-        PreMineSpendStep3OutputsForSelf,
-        PreMineSpendStep4OutputsForLeader,
-        RecipientInfo,
-        Step2OutputsForLeader,
-        Step2OutputsForSelf,
-        Step3OutputsForParties,
-        Step3OutputsForSelf,
+        PreMineSpendStep1SessionInfo, PreMineSpendStep2OutputsForLeader, PreMineSpendStep2OutputsForSelf,
+        PreMineSpendStep3OutputsForParties, PreMineSpendStep3OutputsForSelf, PreMineSpendStep4OutputsForLeader,
+        RecipientInfo, Step2OutputsForLeader, Step2OutputsForSelf, Step3OutputsForParties, Step3OutputsForSelf,
         Step4OutputsForLeader,
     },
     cli::{CliCommands, CliRecipientInfo, MakeItRainTransactionType},
@@ -677,8 +643,8 @@ pub async fn monitor_transactions(
             Ok(event) => match &*event {
                 TransactionEvent::TransactionSendResult(id, status) if tx_ids.contains(id) => {
                     debug!(target: LOG_TARGET, "tx send event for tx_id: {}, {}", *id, status);
-                    if wait_stage == TransactionStage::DirectSendOrSaf &&
-                        (status.direct_send_result || status.store_and_forward_send_result)
+                    if wait_stage == TransactionStage::DirectSendOrSaf
+                        && (status.direct_send_result || status.store_and_forward_send_result)
                     {
                         results.push(SentTransaction {});
                         if results.len() == tx_ids.len() {
@@ -752,6 +718,19 @@ pub async fn monitor_transactions(
     }
 
     results
+}
+
+pub async fn send_multisig(
+    mut wallet_transaction_service: TransactionServiceHandle,
+    fee_per_gram: u64,
+    amount: MicroMinotari,
+    selection_criteria: UtxoSelectionCriteria,
+    dest_address: TariAddress,
+    payment_id: PaymentId,
+) -> Result<TxId, CommandError> {
+    //TODO dupa
+    println!("dupa");
+    return Ok(TxId::new_random());
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1158,17 +1137,25 @@ pub async fn command_runner(
                 let out_dir = out_dir(&session_info.session_id)?;
                 let out_file_leader = out_dir.join(get_file_name(SPEND_STEP_2_LEADER, Some(args.alias.clone())));
                 write_json_object_to_file_as_line(&out_file_leader, true, session_info.clone())?;
-                write_json_object_to_file_as_line(&out_file_leader, false, PreMineSpendStep2OutputsForLeader {
-                    outputs_for_leader,
-                    alias: args.alias.clone(),
-                })?;
+                write_json_object_to_file_as_line(
+                    &out_file_leader,
+                    false,
+                    PreMineSpendStep2OutputsForLeader {
+                        outputs_for_leader,
+                        alias: args.alias.clone(),
+                    },
+                )?;
 
                 let out_file_self = out_dir.join(get_file_name(SPEND_STEP_2_SELF, None));
                 write_json_object_to_file_as_line(&out_file_self, true, session_info.clone())?;
-                write_json_object_to_file_as_line(&out_file_self, false, PreMineSpendStep2OutputsForSelf {
-                    outputs_for_self,
-                    alias: args.alias.clone(),
-                })?;
+                write_json_object_to_file_as_line(
+                    &out_file_self,
+                    false,
+                    PreMineSpendStep2OutputsForSelf {
+                        outputs_for_self,
+                        alias: args.alias.clone(),
+                    },
+                )?;
 
                 println!();
                 println!("Concluded step 2 'pre-mine-spend-party-details'");
@@ -1413,15 +1400,19 @@ pub async fn command_runner(
                 let out_dir = out_dir(&session_id)?;
                 let out_file = out_dir.join(get_file_name(SPEND_STEP_3_SELF, None));
                 write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
-                write_json_object_to_file_as_line(&out_file, false, PreMineSpendStep3OutputsForSelf {
-                    outputs_for_self,
-                })?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep3OutputsForSelf { outputs_for_self },
+                )?;
 
                 let out_file = out_dir.join(get_file_name(SPEND_STEP_3_PARTIES, None));
                 write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
-                write_json_object_to_file_as_line(&out_file, false, PreMineSpendStep3OutputsForParties {
-                    outputs_for_parties,
-                })?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep3OutputsForParties { outputs_for_parties },
+                )?;
 
                 println!();
                 println!("Concluded step 3 'pre-mine-spend-encumber-aggregate-utxo'");
@@ -1605,9 +1596,10 @@ pub async fn command_runner(
 
                     // Metadata signature
                     let script_offset = key_manager_service
-                        .get_script_offset(&vec![party_info.pre_mine_script_key_id.clone()], &vec![party_info
-                            .sender_offset_key_id
-                            .clone()])
+                        .get_script_offset(
+                            &vec![party_info.pre_mine_script_key_id.clone()],
+                            &vec![party_info.sender_offset_key_id.clone()],
+                        )
                         .await?;
                     let challenge = TransactionOutput::build_metadata_signature_challenge(
                         &TransactionOutputVersion::get_current_version(),
@@ -1638,8 +1630,8 @@ pub async fn command_runner(
                         },
                     };
 
-                    if script_signature.get_signature() == Signature::default().get_signature() ||
-                        metadata_signature.get_signature() == Signature::default().get_signature()
+                    if script_signature.get_signature() == Signature::default().get_signature()
+                        || metadata_signature.get_signature() == Signature::default().get_signature()
                     {
                         eprintln!(
                             "\nError: Script and/or metadata signatures not created (index {})!\n",
@@ -1672,13 +1664,297 @@ pub async fn command_runner(
                     Some(party_info_indexed.alias.clone()),
                 ));
                 write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
-                write_json_object_to_file_as_line(&out_file, false, PreMineSpendStep4OutputsForLeader {
-                    outputs_for_leader,
-                    alias: party_info_indexed.alias.clone(),
-                })?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep4OutputsForLeader {
+                        outputs_for_leader,
+                        alias: party_info_indexed.alias.clone(),
+                    },
+                )?;
 
                 println!();
                 println!("Concluded step 4 'pre-mine-spend-input-output-sigs'");
+                println!(
+                    "Send '{}' to leader for step 5",
+                    get_file_name(SPEND_STEP_4_LEADER, Some(party_info_indexed.alias))
+                );
+                println!();
+            },
+
+            //TODO dupa
+            SendMultisigSigs(args) => {
+                let session_info;
+                // Read session info
+                let mut session_id = args.session_id.clone();
+                loop {
+                    if session_id.is_empty() {
+                        eprintln!("\nError: No session id present\n");
+                        session_id = InputPrompt::<String>::new()
+                            .with_prompt("Please enter a session id to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
+                        Ok(v) => session_info = v,
+                        Err(_) => {
+                            eprintln!("\nError: invalid session id\n");
+                            session_id = InputPrompt::<String>::new()
+                                .with_prompt("Please enter a session id to use")
+                                .interact()
+                                .unwrap();
+                            continue;
+                        },
+                    }
+                    break;
+                }
+                // Read leader input
+                let leader_info_indexed = read_and_verify::<PreMineSpendStep3OutputsForParties>(
+                    &session_id,
+                    &get_file_name(SPEND_STEP_3_PARTIES, None),
+                    &session_info,
+                )?;
+                // Read own party info
+                let party_info_indexed = read_and_verify::<PreMineSpendStep2OutputsForSelf>(
+                    &session_id,
+                    &get_file_name(SPEND_STEP_2_SELF, None),
+                    &session_info,
+                )?;
+
+                // Verify index consistency
+                let session_info_indexes = session_info
+                    .recipient_info
+                    .iter()
+                    .map(|v| v.output_to_be_spend)
+                    .collect::<Vec<_>>();
+                let leader_info_indexes = leader_info_indexed
+                    .outputs_for_parties
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                let party_info_indexes = party_info_indexed
+                    .outputs_for_self
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                if session_info_indexes != leader_info_indexes || session_info_indexes != party_info_indexes {
+                    eprintln!(
+                        "\nError: Mismatched output indexes detected! session {:?} vs. leader {:?} vs. self {:?}\n",
+                        session_info_indexes, leader_info_indexes, party_info_indexes
+                    );
+                    break;
+                }
+
+                // TODO remove
+                // let pre_mine_from_file =
+                //     match read_genesis_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                //         Ok(outputs) => outputs,
+                //         Err(e) => {
+                //             eprintln!("\nError: {}\n", e);
+                //             break;
+                //         },
+                //     };
+                let utxos_from_file =
+                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                        Ok(outputs) => outputs,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            break;
+                        },
+                    };
+
+                println!();
+                let mut outputs_for_leader = Vec::with_capacity(party_info_indexed.outputs_for_self.len());
+                let mut error = false;
+                for (i, (leader_info, party_info)) in leader_info_indexed
+                    .outputs_for_parties
+                    .iter()
+                    .zip(party_info_indexed.outputs_for_self.iter())
+                    .enumerate()
+                {
+                    let embedded_output =
+                        match get_utxos_outputs(vec![party_info.output_index], utxos_from_file.clone()) {
+                            Ok(outputs) => outputs[0].clone(),
+                            Err(e) => {
+                                eprintln!("\nError: {}\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+
+                    // let embedded_output = match get_embedded_pre_mine_outputs(
+                    //     vec![party_info.output_index],
+                    //     pre_mine_from_file.clone(),
+                    // ) {
+                    //     Ok(outputs) => outputs[0].clone(),
+                    //     Err(e) => {
+                    //         eprintln!("\nError: {}\n", e);
+                    //         error = true;
+                    //         break;
+                    //     },
+                    // };
+
+                    // Script signature
+                    let challenge = TransactionInput::build_script_signature_challenge(
+                        &TransactionInputVersion::get_current_version(),
+                        &leader_info.script_signature_ephemeral_commitment,
+                        &leader_info.script_signature_ephemeral_pubkey,
+                        &leader_info.input_script,
+                        &leader_info.input_stack,
+                        &leader_info.total_script_key,
+                        &embedded_output.commitment,
+                    );
+
+                    let script_signature = match key_manager_service
+                        .sign_with_nonce_and_challenge(
+                            &party_info.pre_mine_script_key_id,
+                            &party_info.script_nonce_key_id,
+                            &challenge,
+                        )
+                        .await
+                    {
+                        Ok(signature) => signature,
+                        Err(e) => {
+                            eprintln!("\nError: Script signature SignMessage error! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    // lets verify the script
+                    let shared_secret = match DiffieHellmanSharedSecret::<UncompressedPublicKey>::from_canonical_bytes(
+                        leader_info.shared_secret.as_bytes(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("\nError: Could not create shared secret from canonical bytes! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    let encryption_key = shared_secret_to_output_encryption_key(&shared_secret)?;
+                    let (committed_value, commitment_mask_private_key, _payment_id) = match EncryptedData::decrypt_data(
+                        &encryption_key,
+                        &leader_info.output_commitment,
+                        &leader_info.encrypted_data,
+                    ) {
+                        Ok((value, mask, id)) => (value, mask, id),
+                        Err(e) => {
+                            eprintln!("\nError: Could not decrypt data! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    let commitment_mask_key_id = &key_manager_service
+                        .import_key(commitment_mask_private_key.clone())
+                        .await?;
+                    match key_manager_service
+                        .verify_mask(
+                            &leader_info.output_commitment,
+                            commitment_mask_key_id,
+                            committed_value.as_u64(),
+                        )
+                        .await
+                    {
+                        Ok(_) => {},
+                        Err(e) => {
+                            eprintln!("\nError: Could not verify mask! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    }
+                    // now lets calculate the script with stealth key
+                    let script_spending_key = key_manager_service
+                        .stealth_address_script_spending_key(
+                            commitment_mask_key_id,
+                            party_info.recipient_address.public_spend_key(),
+                        )
+                        .await?;
+                    let script = push_pubkey_script(&script_spending_key);
+
+                    // Metadata signature
+                    let script_offset = key_manager_service
+                        .get_script_offset(
+                            &vec![party_info.pre_mine_script_key_id.clone()],
+                            &vec![party_info.sender_offset_key_id.clone()],
+                        )
+                        .await?;
+                    let challenge = TransactionOutput::build_metadata_signature_challenge(
+                        &TransactionOutputVersion::get_current_version(),
+                        &script,
+                        &leader_info.output_features,
+                        &leader_info.sender_offset_pubkey,
+                        &leader_info.metadata_signature_ephemeral_commitment,
+                        &leader_info.metadata_signature_ephemeral_pubkey,
+                        &leader_info.output_commitment,
+                        &Covenant::default(),
+                        &leader_info.encrypted_data,
+                        MicroMinotari::zero(),
+                    );
+
+                    let metadata_signature = match key_manager_service
+                        .sign_with_nonce_and_challenge(
+                            &party_info.sender_offset_key_id,
+                            &party_info.sender_offset_nonce_key_id,
+                            &challenge,
+                        )
+                        .await
+                    {
+                        Ok(signature) => signature,
+                        Err(e) => {
+                            eprintln!("\nError: Metadata signature SignMessage error! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    if script_signature.get_signature() == Signature::default().get_signature()
+                        || metadata_signature.get_signature() == Signature::default().get_signature()
+                    {
+                        eprintln!(
+                            "\nError: Script and/or metadata signatures not created (index {})!\n",
+                            party_info.output_index
+                        );
+                        error = true;
+                        break;
+                    }
+
+                    outputs_for_leader.push(Step4OutputsForLeader {
+                        output_index: party_info.output_index,
+                        script_signature,
+                        metadata_signature,
+                        script_offset,
+                    });
+
+                    println!(
+                        "  Processed {} of {} transactions",
+                        i + 1,
+                        leader_info_indexed.outputs_for_parties.len()
+                    );
+                }
+                if error {
+                    break;
+                }
+
+                let out_dir = out_dir(&session_id)?;
+                let out_file = out_dir.join(get_file_name(
+                    SPEND_STEP_4_LEADER,
+                    Some(party_info_indexed.alias.clone()),
+                ));
+                write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep4OutputsForLeader {
+                        outputs_for_leader,
+                        alias: party_info_indexed.alias.clone(),
+                    },
+                )?;
+
+                println!();
+                println!("Concluded step 4 'send-multisig-spend-input-output-sigs'");
                 println!(
                     "Send '{}' to leader for step 5",
                     get_file_name(SPEND_STEP_4_LEADER, Some(party_info_indexed.alias))
@@ -2027,6 +2303,352 @@ pub async fn command_runner(
                     );
                 }
                 println!("Concluded step 5 'pre-mine-spend-aggregate-transaction'");
+                println!();
+            },
+
+            // TODO dupa
+            SendMultisigSpendTx(args) => {
+                temp_ban_peers(&wallet, &mut peer_list).await;
+                unban_peer_manager_peers = true;
+
+                // Read session info
+
+                let session_info;
+                let mut session_id = args.session_id.clone();
+                loop {
+                    if session_id.is_empty() {
+                        eprintln!("\nError: No session id present\n");
+                        session_id = InputPrompt::<String>::new()
+                            .with_prompt("Please enter a session id to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
+                        Ok(v) => session_info = v,
+                        Err(_) => {
+                            eprintln!("\nError: invalid session id\n");
+                            session_id = InputPrompt::<String>::new()
+                                .with_prompt("Please enter a session id to use")
+                                .interact()
+                                .unwrap();
+                            continue;
+                        },
+                    }
+                    break;
+                }
+
+                // Read other parties info
+                let mut party_info = Vec::with_capacity(args.member.len());
+                for name in args.member {
+                    let file_name = get_file_name(SPEND_STEP_4_LEADER, Some(name.clone()));
+                    party_info.push(read_and_verify::<PreMineSpendStep4OutputsForLeader>(
+                        &args.session_id,
+                        &file_name,
+                        &session_info,
+                    )?);
+                }
+                // Read own party info
+                let leader_info = read_and_verify::<PreMineSpendStep3OutputsForSelf>(
+                    &args.session_id,
+                    &get_file_name(SPEND_STEP_3_SELF, None),
+                    &session_info,
+                )?;
+
+                // Verify index consistency
+                let session_info_indexes = session_info
+                    .recipient_info
+                    .iter()
+                    .map(|v| v.output_to_be_spend)
+                    .collect::<Vec<_>>();
+                let leader_info_indexes = leader_info
+                    .outputs_for_self
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                if session_info_indexes != leader_info_indexes {
+                    eprintln!(
+                        "\nError: Mismatched output indexes detected! session {:?} vs. leader (self) {:?}\n",
+                        session_info_indexes, leader_info_indexes
+                    );
+                    break;
+                }
+                let mut error = false;
+                for party in &party_info {
+                    let party_info_indexes = party
+                        .outputs_for_leader
+                        .iter()
+                        .map(|v| v.output_index)
+                        .collect::<Vec<_>>();
+                    if session_info_indexes != party_info_indexes {
+                        eprintln!(
+                            "\nError: Mismatched output indexes from '{}' detected! session {:?} vs. party {:?}\n",
+                            party.alias, session_info_indexes, party_info_indexes
+                        );
+                        error = true;
+                        break;
+                    }
+                }
+                if error {
+                    break;
+                }
+
+                // Flatten and transpose party_info to be indexed by output index
+                let party_info_flattened = party_info
+                    .iter()
+                    .map(|v1| v1.outputs_for_leader.clone())
+                    .collect::<Vec<_>>();
+                let mut party_info_per_index = Vec::with_capacity(party_info_flattened[0].len());
+                let number_of_parties = party_info_flattened.len();
+                for i in 0..party_info_flattened[0].len() {
+                    let mut outputs_per_index = Vec::with_capacity(number_of_parties);
+                    for outputs in &party_info_flattened {
+                        outputs_per_index.push(outputs[i].clone());
+                    }
+                    party_info_per_index.push(outputs_per_index);
+                }
+
+                // Create finalized spend transactions
+                let mut inputs = Vec::new();
+                let mut outputs = Vec::new();
+                let mut kernels = Vec::new();
+                let mut kernel_offset = PrivateKey::default();
+                for (i, (indexed_info, leader_self)) in party_info_per_index
+                    .iter()
+                    .zip(leader_info.outputs_for_self.iter())
+                    .enumerate()
+                {
+                    let mut metadata_signatures = Vec::with_capacity(party_info_per_index.len());
+                    let mut script_signatures = Vec::with_capacity(party_info_per_index.len());
+                    let mut offset = PrivateKey::default();
+                    for party_info in indexed_info {
+                        metadata_signatures.push(party_info.metadata_signature.clone());
+                        script_signatures.push(party_info.script_signature.clone());
+                        offset = &offset + &party_info.script_offset;
+                    }
+
+                    if let Err(e) = finalise_aggregate_utxo(
+                        transaction_service.clone(),
+                        leader_self.tx_id.as_u64(),
+                        metadata_signatures,
+                        script_signatures,
+                        offset,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "\nError: Error completing transaction '{}'! ({})\n",
+                            leader_self.tx_id, e
+                        );
+                        error = true;
+                        break;
+                    }
+
+                    // Collect all inputs, outputs and kernels that should go into the genesis block
+                    println!();
+                    if session_info.use_pre_mine_input_file {
+                        match transaction_service.get_any_transaction(leader_self.tx_id).await {
+                            Ok(Some(WalletTransaction::Completed(tx))) => {
+                                // Fees must be zero
+                                match tx.transaction.body.get_total_fee() {
+                                    Ok(fee) => {
+                                        if fee != MicroMinotari::zero() {
+                                            eprintln!(
+                                                "\nError: Transaction {} fee ({}) for does not equal zero!\n",
+                                                tx.tx_id, fee
+                                            );
+                                            error = true;
+                                            break;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        eprintln!("\nError: Transaction {}! ({})\n", tx.tx_id, e);
+                                        error = true;
+                                        break;
+                                    },
+                                }
+
+                                let mut utxo_sum = UncompressedCommitment::default();
+                                for output in tx.transaction.body.outputs() {
+                                    outputs.push(output.clone());
+                                    utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
+                                }
+                                for input in tx.transaction.body.inputs() {
+                                    inputs.push(input.clone());
+                                    match input.commitment() {
+                                        Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
+                                        Err(e) => {
+                                            eprintln!("\nError: Input commitment ({})!\n", e);
+                                            error = true;
+                                            break;
+                                        },
+                                    }
+                                }
+                                if error {
+                                    break;
+                                }
+                                let mut kernel_sum = UncompressedCommitment::default();
+                                for kernel in tx.transaction.body.kernels() {
+                                    kernels.push(kernel.clone());
+                                    kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
+                                }
+                                kernel_offset = &kernel_offset + &tx.transaction.offset;
+                                // Ensure that the balance equation holds:
+                                //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) +
+                                // total_offset
+                                let offset = CryptoFactories::default()
+                                    .commitment
+                                    .commit_value(&tx.transaction.offset, 0);
+                                if utxo_sum != &kernel_sum + &offset {
+                                    eprintln!(
+                                        "\nError: Transaction {} balance: UTXO sum {} vs. kernel sum + offset {}!\n",
+                                        tx.tx_id,
+                                        utxo_sum.to_hex(),
+                                        (&kernel_sum + &offset).to_hex()
+                                    );
+                                    error = true;
+                                    break;
+                                }
+                            },
+                            Ok(_) => {
+                                eprintln!(
+                                    "\nError: Transaction '{}' is not in a completed state!\n",
+                                    leader_self.tx_id
+                                );
+                                break;
+                            },
+                            Err(e) => {
+                                eprintln!("\nError: Transaction '{}' not found! ({})\n", leader_self.tx_id, e);
+                                break;
+                            },
+                        }
+                    }
+
+                    println!("  Processed {} of {}", i + 1, party_info_per_index.len());
+                }
+                if error {
+                    break;
+                }
+
+                let file_name = "multisig_addition.json".to_string(); //TODO file name?
+                let out_dir_path = out_dir(&args.session_id)?;
+                let out_file = out_dir_path.join(&file_name);
+                if session_info.use_pre_mine_input_file {
+                    // Ensure that the balance equation holds:
+                    //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) + kernel_offset
+                    let mut utxo_sum = UncompressedCommitment::default();
+                    for output in &outputs {
+                        utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
+                    }
+                    for input in &inputs {
+                        match input.commitment() {
+                            Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
+                            Err(e) => {
+                                eprintln!("\nError: Input commitment ({})!\n", e);
+                                break;
+                            },
+                        }
+                    }
+                    let mut kernel_sum = UncompressedCommitment::default();
+                    for kernel in &kernels {
+                        kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
+                    }
+                    let offset = CryptoFactories::default().commitment.commit_value(&kernel_offset, 0);
+                    if utxo_sum != &kernel_sum + &offset {
+                        eprintln!(
+                            "\nError: Transactions balance: UTXO sum {} vs. kernel sum + offset {}!\n",
+                            utxo_sum.to_hex(),
+                            (&kernel_sum + &offset).to_hex()
+                        );
+                    }
+
+                    let mut file_stream = match File::create(&out_file) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            eprintln!("\nError: Could not create the pre-mine file ({})\n", e);
+                            break;
+                        },
+                    };
+
+                    let mut error = false;
+                    inputs.sort();
+                    for input in &inputs {
+                        let input_s = match serde_json::to_string(&input) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", input_s).as_bytes()) {
+                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    outputs.sort();
+                    for output in &outputs {
+                        let utxo_s = match serde_json::to_string(&output) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
+                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    kernels.sort();
+                    for kernel in &kernels {
+                        let kernel_s = match serde_json::to_string(&kernel) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize kernel ({})\n", e);
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", kernel_s).as_bytes()) {
+                            eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    let kernel_offset_s = match serde_json::to_string(&kernel_offset) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: Could not serialize kernel offset ({})\n", e);
+                            break;
+                        },
+                    };
+                    if let Err(e) = file_stream.write_all(format!("{}\n", kernel_offset_s).as_bytes()) {
+                        eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                        break;
+                    }
+                }
+
+                println!();
+                if session_info.use_pre_mine_input_file {
+                    println!(
+                        "Genesis block immediate send-multisig spend information: '{}' in '{}'",
+                        file_name,
+                        out_dir_path.display()
+                    );
+                }
+                println!("Concluded step 5 'send-multisig-spend-aggregate-transaction'");
                 println!();
             },
             SendMinotari(args) => {
@@ -2707,6 +3329,501 @@ pub async fn command_runner(
                 println!("removing temp wallet in: {:?}", temp_path);
                 fs::remove_dir_all(temp_path)?;
             },
+            SendMultisig(args) => {
+                match send_multisig(
+                    transaction_service.clone(),
+                    config.fee_per_gram,
+                    args.amount,
+                    UtxoSelectionCriteria::default(),
+                    args.destination.clone(),
+                    PaymentId::open(&args.payment_id, detect_tx_metadata(&wallet, args.destination).await),
+                )
+                .await
+                {
+                    Ok(tx_id) => {
+                        debug!(
+                            target: LOG_TARGET,
+                            "send-multisig concluded with tx_id {}", tx_id
+                        );
+                        tx_ids.push(tx_id);
+                    },
+                    Err(e) => eprintln!("SendMultisig error! {}", e),
+                }
+            },
+
+            // TODO dupa
+            SendMultisigStart(args) => {
+                let args_recipient_info = sort_args_recipient_info(args.recipient_info);
+                if let Err(e) = verify_no_duplicate_indexes(&args_recipient_info) {
+                    eprintln!("\nError: {} duplicate output indexes detected!\n", e);
+                    break;
+                }
+
+                let mut recipient_info = Vec::new();
+                for item in args_recipient_info {
+                    for index in item.output_indexes {
+                        recipient_info.push(RecipientInfo {
+                            output_to_be_spend: index,
+                            recipient_address: item.recipient_address.clone(),
+                        });
+                    }
+                }
+
+                let (session_id, out_dir) = match create_pre_mine_output_dir(None) {
+                    Ok(values) => values,
+                    Err(e) => {
+                        eprintln!("\nError: {}\n", e);
+                        return Ok(false);
+                    },
+                };
+                let session_info = PreMineSpendStep1SessionInfo {
+                    session_id: session_id.clone(),
+                    fee_per_gram: args.fee_per_gram,
+                    recipient_info,
+                    use_pre_mine_input_file: args.use_utxo_list_input_file,
+                };
+
+                let out_file = out_dir.join(get_file_name(SPEND_SESSION_INFO, None));
+                write_to_json_file(&out_file, true, session_info)?;
+                println!();
+                println!("Concluded step 1 'send-multisig-spend-session-info'");
+                println!("Your session ID is:                 '{}'", session_id);
+                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!("Session info saved to:              '{}'", out_file.display());
+                println!(
+                    "Send '{}' to parties for step 2",
+                    get_file_name(SPEND_SESSION_INFO, None)
+                );
+                println!();
+            },
+
+            // TODO dupa
+            SendMultisigStartParty(args) => {
+                let mut alias = args.alias.clone();
+                loop {
+                    if alias.is_empty() || alias.contains(" ") {
+                        eprintln!("\nError: Alias cannot contain spaces!\n");
+                        alias = InputPrompt::<String>::new()
+                            .with_prompt("Please enter an alias to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    if alias.chars().any(|c| !c.is_alphanumeric() && c != '_') {
+                        eprintln!(
+                            "\nError: Alias contains invalid characters! Only alphanumeric and '_' are allowed.\n"
+                        );
+                        alias = InputPrompt::<String>::new()
+                            .with_prompt("Please enter an alias to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    break;
+                }
+                let mut input_file_path = args.input_file.clone();
+                while input_file_path.is_none() {
+                    eprintln!("\nError: Missing input file path!\n");
+                    input_file_path = Some(
+                        InputPrompt::<String>::new()
+                            .with_prompt("Please enter the path to the input file")
+                            .interact()
+                            .unwrap(),
+                    );
+                }
+
+                let file_path = PathBuf::from(input_file_path.unwrap());
+
+                // Read session info
+                let session_info = read_session_info::<PreMineSpendStep1SessionInfo>(file_path.clone())?;
+                // Verify  session info
+                // session_info.recipient_info
+
+                let pre_mine_from_file =
+                    match read_genesis_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                        Ok(outputs) => outputs,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            break;
+                        },
+                    };
+
+                println!();
+                let mut outputs_for_leader = Vec::with_capacity(session_info.recipient_info.len());
+                let mut outputs_for_self = Vec::with_capacity(session_info.recipient_info.len());
+                let mut error = false;
+                for (i, recipient_info) in session_info.recipient_info.iter().enumerate() {
+                    println!(
+                        "  Start processing {} of {} transactions, current wallet {}",
+                        i + 1,
+                        session_info.recipient_info.len(),
+                        recipient_info.recipient_address
+                    );
+                    let output_index = recipient_info.output_to_be_spend;
+                    let embedded_output =
+                        match get_embedded_pre_mine_outputs(vec![output_index], pre_mine_from_file.clone()) {
+                            Ok(outputs) => outputs[0].clone(),
+                            Err(e) => {
+                                eprintln!("\nError: {}\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+                    let commitment = embedded_output.commitment.clone();
+
+                    let script_nonce_key = key_manager_service.get_random_key().await?;
+                    let sender_offset_key = key_manager_service.get_random_key().await?;
+                    let sender_offset_nonce = key_manager_service.get_random_key().await?;
+                    let shared_secret = key_manager_service
+                        .get_diffie_hellman_shared_secret(
+                            &sender_offset_key.key_id,
+                            recipient_info
+                                .recipient_address
+                                .public_view_key()
+                                .ok_or(CommandError::InvalidArgument("Missing public view key".to_string()))?,
+                        )
+                        .await?;
+                    let shared_secret_public_key = CompressedPublicKey::from_canonical_bytes(shared_secret.as_bytes())?;
+
+                    let pre_mine_script_key_id = TariKeyId::Managed {
+                        branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
+                        index: output_index as u64,
+                    };
+                    let pre_mine_public_script_key = match key_manager_service
+                        .get_public_key_at_key_id(&pre_mine_script_key_id)
+                        .await
+                    {
+                        Ok(key) => key,
+                        Err(e) => {
+                            eprintln!(
+                                "\nError: Could not retrieve script key for output {}: {}\n",
+                                output_index, e
+                            );
+                            error = true;
+                            break;
+                        },
+                    };
+                    let script_input_signature = key_manager_service
+                        .sign_script_message(&pre_mine_script_key_id, commitment.as_bytes())
+                        .await?;
+
+                    outputs_for_leader.push(Step2OutputsForLeader {
+                        output_index,
+                        recipient_address: recipient_info.recipient_address.clone(),
+                        script_input_signature,
+                        public_script_nonce_key: script_nonce_key.pub_key,
+                        public_sender_offset_key: sender_offset_key.pub_key,
+                        public_sender_offset_nonce_key: sender_offset_nonce.pub_key,
+                        dh_shared_secret_public_key: shared_secret_public_key,
+                        pre_mine_public_script_key,
+                    });
+
+                    outputs_for_self.push(Step2OutputsForSelf {
+                        output_index,
+                        recipient_address: recipient_info.recipient_address.clone(),
+                        script_nonce_key_id: script_nonce_key.key_id,
+                        sender_offset_key_id: sender_offset_key.key_id,
+                        sender_offset_nonce_key_id: sender_offset_nonce.key_id,
+                        pre_mine_script_key_id,
+                    });
+                    println!(
+                        "    Processed {} of {} transactions",
+                        i + 1,
+                        session_info.recipient_info.len()
+                    );
+
+                    if error {
+                        break;
+                    }
+                }
+                if error {
+                    break;
+                }
+
+                let out_dir = out_dir(&session_info.session_id)?;
+                let out_file_leader = out_dir.join(get_file_name(SPEND_STEP_2_LEADER, Some(args.alias.clone())));
+                write_json_object_to_file_as_line(&out_file_leader, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file_leader,
+                    false,
+                    PreMineSpendStep2OutputsForLeader {
+                        outputs_for_leader,
+                        alias: args.alias.clone(),
+                    },
+                )?;
+
+                let out_file_self = out_dir.join(get_file_name(SPEND_STEP_2_SELF, None));
+                write_json_object_to_file_as_line(&out_file_self, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file_self,
+                    false,
+                    PreMineSpendStep2OutputsForSelf {
+                        outputs_for_self,
+                        alias: args.alias.clone(),
+                    },
+                )?;
+
+                println!();
+                println!("Concluded step 2 'pre-mine-spend-party-details'");
+                println!("Your session's output directory is '{}'", out_dir.display());
+                move_session_file_to_session_dir(&session_info.session_id, &file_path)?;
+                println!(
+                    "Send '{}' to leader for step 3",
+                    get_file_name(SPEND_STEP_2_LEADER, Some(alias))
+                );
+                println!();
+            },
+
+            // TODO dupa
+            SendMultisigEncumber(args) => {
+                let session_info;
+                // Read session info
+                let mut session_id = args.session_id.clone();
+                loop {
+                    if session_id.is_empty() {
+                        eprintln!("\nError: No session id present\n");
+                        session_id = InputPrompt::<String>::new()
+                            .with_prompt("Please enter a session id to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
+                        Ok(v) => session_info = v,
+                        Err(_) => {
+                            eprintln!("\nError: invalid session id\n");
+                            session_id = InputPrompt::<String>::new()
+                                .with_prompt("Please enter a session id to use")
+                                .interact()
+                                .unwrap();
+                            continue;
+                        },
+                    }
+                    break;
+                }
+                let session_info_indexed = session_info
+                    .recipient_info
+                    .iter()
+                    .map(|v| (v.output_to_be_spend, v.recipient_address.clone()))
+                    .collect::<Vec<_>>();
+
+                // Read and verify party info
+                let mut party_info = Vec::with_capacity(args.member.len());
+                for name in args.member {
+                    let file_name = get_file_name(SPEND_STEP_2_LEADER, Some(name.clone()));
+                    println!("reading: {}", file_name);
+                    party_info.push(read_and_verify::<PreMineSpendStep2OutputsForLeader>(
+                        &session_id,
+                        &file_name,
+                        &session_info,
+                    )?);
+                }
+                let mut error = false;
+                for party in &party_info {
+                    let this_party_info = party
+                        .outputs_for_leader
+                        .iter()
+                        .map(|v1| (v1.output_index, v1.recipient_address.clone()))
+                        .collect::<Vec<_>>();
+
+                    if session_info_indexed != this_party_info {
+                        eprintln!(
+                            "\nError: Mismatched recipient info from '{}', expected {:?} received {:?}!\n",
+                            party.alias,
+                            session_info_indexed
+                                .iter()
+                                .map(|(index, address)| (*index, address.to_hex().clone()))
+                                .collect::<Vec<_>>(),
+                            this_party_info
+                                .iter()
+                                .map(|(index, address)| (*index, address.to_hex().clone()))
+                                .collect::<Vec<_>>(),
+                        );
+                        error = true;
+                        break;
+                    }
+                }
+                if error {
+                    break;
+                }
+
+                // Flatten and transpose party_info to be indexed by output index
+                let party_info_flattened = party_info
+                    .iter()
+                    .map(|v1| v1.outputs_for_leader.clone())
+                    .collect::<Vec<_>>();
+                let mut party_info_per_index = Vec::with_capacity(party_info_flattened[0].len());
+                for i in 0..party_info_flattened[0].len() {
+                    let mut outputs_per_index = Vec::with_capacity(party_info_flattened.len());
+                    for outputs in &party_info_flattened {
+                        outputs_per_index.push(outputs[i].clone());
+                    }
+                    party_info_per_index.push(outputs_per_index);
+                }
+
+                // TODO remove
+                let utxos_from_file =
+                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                        Ok(outputs) => outputs,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            break;
+                        },
+                    };
+
+                // Encumber outputs
+                let mut outputs_for_parties = Vec::with_capacity(party_info_per_index.len());
+                let mut outputs_for_self = Vec::with_capacity(party_info_per_index.len());
+
+                println!();
+                for (i, indexed_info) in party_info_per_index.iter().enumerate() {
+                    #[allow(clippy::mutable_key_type)]
+                    let mut input_shares = HashMap::new();
+                    let mut script_signature_public_nonces = Vec::with_capacity(indexed_info.len());
+                    let mut sender_offset_public_key_shares = Vec::with_capacity(indexed_info.len());
+                    let mut metadata_ephemeral_public_key_shares = Vec::with_capacity(indexed_info.len());
+                    let mut dh_shared_secret_shares = Vec::with_capacity(indexed_info.len());
+                    let current_index = indexed_info[0].output_index;
+                    let current_recipient_address = indexed_info[0].recipient_address.clone();
+                    for item in indexed_info {
+                        if current_index != item.output_index {
+                            eprintln!(
+                                "\nError: Mismatched output indexes detected! (expected {}, got {})\n",
+                                current_index, item.output_index
+                            );
+                            error = true;
+                            break;
+                        }
+                        if current_recipient_address != item.recipient_address {
+                            eprintln!(
+                                "\nError: Mismatched recipient addresses detected! (expected {}, got {})\n",
+                                current_recipient_address, item.recipient_address
+                            );
+                            error = true;
+                            break;
+                        }
+                        input_shares.insert(
+                            item.pre_mine_public_script_key.clone(),
+                            item.script_input_signature.clone(),
+                        );
+                        script_signature_public_nonces.push(item.public_script_nonce_key.clone());
+                        sender_offset_public_key_shares.push(item.public_sender_offset_key.clone());
+                        metadata_ephemeral_public_key_shares.push(item.public_sender_offset_nonce_key.clone());
+                        dh_shared_secret_shares.push(item.dh_shared_secret_public_key.clone());
+                    }
+                    if error {
+                        break;
+                    }
+
+                    // let original_maturity = utxos[current_index].original_maturity;
+                    let original_maturity = 0; //TODO
+                    let embedded_output = match get_utxos_outputs(vec![current_index], utxos_from_file.clone()) {
+                        Ok(outputs) => outputs[0].clone(),
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    match encumber_aggregate_utxo(
+                        transaction_service.clone(),
+                        if session_info.use_pre_mine_input_file {
+                            MicroMinotari::zero()
+                        } else {
+                            session_info.fee_per_gram
+                        },
+                        embedded_output.commitment.clone(),
+                        input_shares,
+                        script_signature_public_nonces,
+                        sender_offset_public_key_shares,
+                        metadata_ephemeral_public_key_shares,
+                        dh_shared_secret_shares,
+                        current_recipient_address.clone(),
+                        original_maturity,
+                        if utxos_from_file.is_some() {
+                            UseOutput::AsProvided(Box::new(embedded_output))
+                        } else {
+                            UseOutput::FromBlockchain(embedded_output.hash())
+                        },
+                        PaymentId::open(
+                            &args.payment_id,
+                            detect_tx_metadata(&wallet, current_recipient_address).await,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok((
+                            tx_id,
+                            transaction,
+                            script_pubkey,
+                            total_metadata_ephemeral_public_key,
+                            total_script_nonce,
+                            shared_secret,
+                        )) => {
+                            outputs_for_parties.push(Step3OutputsForParties {
+                                output_index: current_index,
+                                input_stack: transaction.body.inputs()[0].clone().input_data,
+                                input_script: transaction.body.inputs()[0].script().unwrap().clone(),
+                                total_script_key: script_pubkey,
+                                script_signature_ephemeral_commitment: transaction.body.inputs()[0]
+                                    .script_signature
+                                    .ephemeral_commitment()
+                                    .clone(),
+                                script_signature_ephemeral_pubkey: total_script_nonce,
+                                output_commitment: transaction.body.outputs()[0].commitment().clone(),
+                                sender_offset_pubkey: transaction.body.outputs()[0].clone().sender_offset_public_key,
+                                metadata_signature_ephemeral_commitment: transaction.body.outputs()[0]
+                                    .metadata_signature
+                                    .ephemeral_commitment()
+                                    .clone(),
+                                metadata_signature_ephemeral_pubkey: total_metadata_ephemeral_public_key,
+                                encrypted_data: transaction.body.outputs()[0].clone().encrypted_data,
+                                output_features: transaction.body.outputs()[0].clone().features,
+                                shared_secret,
+                            });
+                            outputs_for_self.push(Step3OutputsForSelf {
+                                output_index: current_index,
+                                tx_id,
+                            });
+                        },
+                        Err(e) => {
+                            eprintln!("\nError: Encumber aggregate transaction error! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    }
+                    println!("  Processed {} of {} transactions", i + 1, party_info_per_index.len());
+                }
+                if error {
+                    break;
+                }
+
+                let out_dir = out_dir(&session_id)?;
+                let out_file = out_dir.join(get_file_name(SPEND_STEP_3_SELF, None));
+                write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep3OutputsForSelf { outputs_for_self },
+                )?;
+
+                let out_file = out_dir.join(get_file_name(SPEND_STEP_3_PARTIES, None));
+                write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep3OutputsForParties { outputs_for_parties },
+                )?;
+
+                println!();
+                println!("Concluded step 3 'send-multisig-encumber-aggregate-utxo'");
+                println!(
+                    "Send '{}' to parties for step 4",
+                    get_file_name(SPEND_STEP_3_PARTIES, None)
+                );
+                println!();
+            },
         }
     }
     if unban_peer_manager_peers {
@@ -2848,6 +3965,46 @@ fn read_genesis_file_outputs(
     }
 }
 
+fn read_utxos_file_outputs(
+    use_utxo_list_input_file: bool,
+    utxos_list_file_path: Option<PathBuf>,
+) -> Result<Option<Vec<TransactionOutput>>, String> {
+    if use_utxo_list_input_file {
+        let file_path = if let Some(path) = utxos_list_file_path {
+            let file = path.join("multisig_utxos_list.json".to_string());
+            if !file.exists() {
+                return Err(format!("UTXOs list file '{}' does not exist!", file.display()));
+            }
+            file
+        } else {
+            return Err("Missing file path".to_string());
+        };
+
+        let file = File::open(file_path.clone())
+            .map_err(|e| format!("Problem opening file '{}' ({})", file_path.display(), e))?;
+        let reader = BufReader::new(file);
+
+        let mut outputs = Vec::new();
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("Problem reading line in file '{}' ({})", file_path.display(), e))?;
+            if let Ok(output) = serde_json::from_str::<TransactionOutput>(&line) {
+                outputs.push(output);
+            } else if serde_json::from_str::<TransactionKernel>(&line).is_ok() {
+                // Do nothing here
+            } else {
+                return Err(format!("Error: Could not deserialize line: {}", line));
+            }
+        }
+        if outputs.is_empty() {
+            return Err(format!("No outputs found in '{}'", file_path.display()));
+        }
+
+        Ok(Some(outputs))
+    } else {
+        Ok(None)
+    }
+}
+
 fn get_pre_mine_file_name() -> String {
     match Network::get_current_or_user_setting_or_default() {
         Network::MainNet => "mainnet_pre_mine.json".to_string(),
@@ -2903,6 +4060,30 @@ fn get_embedded_pre_mine_outputs(
         val
     } else {
         get_all_embedded_pre_mine_outputs()?
+    };
+
+    let mut fetched_outputs = Vec::with_capacity(output_indexes.len());
+    for index in output_indexes {
+        if index >= utxos.len() {
+            return Err(CommandError::PreMine(format!(
+                "Error: Invalid 'output_index' {} provided, pre-mine outputs only number {}!",
+                index,
+                utxos.len()
+            )));
+        }
+        fetched_outputs.push(utxos[index].clone());
+    }
+    Ok(fetched_outputs)
+}
+
+fn get_utxos_outputs(
+    output_indexes: Vec<usize>,
+    utxos: Option<Vec<TransactionOutput>>,
+) -> Result<Vec<TransactionOutput>, CommandError> {
+    let utxos = if let Some(val) = utxos {
+        val
+    } else {
+        return Err(CommandError::General(format!("Error: utxo data not found")));
     };
 
     let mut fetched_outputs = Vec::with_capacity(output_indexes.len());
