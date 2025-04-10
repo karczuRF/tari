@@ -20,7 +20,10 @@
 //  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 //  USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use chrono::Utc;
 use log::*;
@@ -43,9 +46,14 @@ use crate::{
 };
 
 const LOG_TARGET: &str = "comms::peer_manager::peer_storage";
-/// The maximum number of peers to return in peer manager
+// The maximum number of peers to return in peer manager
 const PEER_MANAGER_SYNC_PEERS: usize = 100;
-const PEER_ACTIVE_WITHIN_DURATION: u64 = 7 * 24 * 60 * 60; // 7 days, 24h, 60m, 60s = 1 week
+// The maximum amount of time a peer can be inactive before being considered stale:
+// ((5 days, 24h, 60m, 60s)/2 = 2.5 days)
+const STALE_PEER_THRESHOLD_DURATION: Duration = Duration::from_secs(5 * 24 * 60 * 60 / 2);
+// Wallet peer connections are not verified in the way node peer connections are, thus a stale wallet connection may be
+// totally valid, just not verified. Any stale wallet peers that are not neighbours will be deleted.
+const MAX_NEIGHBOUR_WALLET_PEER_COUNT: usize = 25;
 
 /// PeerStorage provides a mechanism to keep a datastore and a local copy of all peers in sync and allow fast searches
 /// using the node_id, public key or net_address of a peer.
@@ -282,7 +290,7 @@ where DS: KeyValueStore<PeerId, Peer>
     /// Return "good" peers for syncing
     /// Criteria:
     ///  - Peer is not banned
-    ///  - Peer has been seen within a defined time span (1 week)
+    ///  - Peer has been seen within a defined time span (within the threshold)
     ///  - Only returns a maximum number of syncable peers (corresponds with the max possible number of requestable
     ///    peers to sync)
     ///  - Uses 0 as max PEER_MANAGER_SYNC_PEERS
@@ -334,6 +342,87 @@ where DS: KeyValueStore<PeerId, Peer>
             .limit(n);
 
         self.perform_query(query)
+    }
+
+    /// Delete all stale peers, removing them from the database and returning their node_ids
+    /// - Stale Nodes:
+    ///   - A node is considered stale if all its addresses have failed or if it has not been seen for more than the
+    ///     threshold number of days.
+    ///   - The node must not be a seed node and be identified as a node (not a client).
+    /// - Stale Wallets:
+    ///   - A wallet is considered stale if it has never been seen, all its addresses have failed, or it has not been
+    ///     seen for more than the threshold number of days.
+    ///   - The wallet must be identified as a client (not a node).
+    ///   - Wallets that are considered neighbours should not be deleted.
+    pub fn delete_all_stale_peers(&mut self, self_node_id: &NodeId) -> Result<Vec<NodeId>, PeerManagerError> {
+        // All stale nodes (except seed nodes)
+        let nodes_query_time = Instant::now();
+        let node_peers = self
+            .peer_db
+            .filter(|(_, peer)| {
+                (peer.all_addresses_failed() || peer.last_seen_since() > Some(STALE_PEER_THRESHOLD_DURATION)) &&
+                    peer.features.is_node() &&
+                    !peer.is_seed()
+            })
+            .map(|pairs| pairs.into_iter().collect::<Vec<_>>())
+            .map_err(PeerManagerError::DatabaseError)?;
+        let nodes_query_time = nodes_query_time.elapsed();
+        // All stale wallets
+        let wallets_query_time = Instant::now();
+        let mut wallet_peers = self
+            .peer_db
+            .filter(|(_, peer)| {
+                (peer.last_seen().is_none() ||
+                    peer.all_addresses_failed() ||
+                    peer.last_seen_since() > Some(STALE_PEER_THRESHOLD_DURATION)) &&
+                    peer.features.is_client()
+            })
+            .map(|pairs| pairs.into_iter().collect::<Vec<_>>())
+            .map_err(PeerManagerError::DatabaseError)?;
+        let wallets_query_time = wallets_query_time.elapsed();
+        // Stale wallet peers that are considered neighbours should not be deleted
+        let neighbour_peers_query_time = Instant::now();
+        let query = PeerQuery::new()
+            .select_where(|peer| peer.features.is_client())
+            .sort_by(PeerQuerySortBy::DistanceFrom(self_node_id))
+            .limit(MAX_NEIGHBOUR_WALLET_PEER_COUNT);
+        let closest_wallet_peers = self.perform_query(query)?;
+        wallet_peers.retain(|(_, peer)| !closest_wallet_peers.contains(peer));
+        let neighbours_query_time = neighbour_peers_query_time.elapsed();
+        // Remove
+        let delete_peers_time = Instant::now();
+        let mut all_deleted_peers = Vec::new();
+        for peer in node_peers.iter().chain(wallet_peers.iter()) {
+            self.peer_db.delete(&peer.0).map_err(PeerManagerError::DatabaseError)?;
+            self.remove_index_links(peer.0);
+            all_deleted_peers.push(peer.1.node_id.clone());
+        }
+        let delete_peers_time = delete_peers_time.elapsed();
+        if all_deleted_peers.is_empty() {
+            trace!(
+                target: LOG_TARGET,
+                "node peers (query: {:.2?}), stale wallet peers (query: {:.2?} + {:.2?}) - {:.2?} total time.",
+                nodes_query_time,
+                wallets_query_time,
+                neighbours_query_time,
+                nodes_query_time + wallets_query_time + neighbours_query_time + delete_peers_time,
+            );
+        } else {
+            trace!(
+                target: LOG_TARGET,
+                "{} stale node peers (query: {:.2?}), {} stale wallet peers (query: {:.2?} + {:.2?}), deleted ({:.2?}) \
+                - {:.2?} total time.",
+                node_peers.len(),
+                nodes_query_time,
+                wallet_peers.len(),
+                wallets_query_time,
+                neighbours_query_time,
+                delete_peers_time,
+                nodes_query_time + wallets_query_time + neighbours_query_time + delete_peers_time,
+            );
+        }
+
+        Ok(all_deleted_peers)
     }
 
     /// Compile a random list of communication node peers of size _n_ that are not banned or offline
@@ -522,7 +611,7 @@ fn is_active_peer(peer: &Peer, features: Option<PeerFeatures>, excluded_peers: &
         !peer.is_banned() &&
         peer.deleted_at.is_none() &&
         peer.last_seen_since().is_some() &&
-        peer.last_seen_since().expect("Last seen to exist") <= Duration::from_secs(PEER_ACTIVE_WITHIN_DURATION)
+        peer.last_seen_since().expect("Last seen to exist") <= STALE_PEER_THRESHOLD_DURATION
 }
 
 #[cfg(test)]
@@ -852,8 +941,10 @@ mod test {
     #[test]
     fn discovery_syncing_returns_correct_peers() {
         let mut peer_storage = PeerStorage::new_indexed(HashmapDatabase::new()).unwrap();
+
+        // Threshold duration + a minute
         #[allow(clippy::cast_possible_wrap)] // Won't wrap around, numbers are static
-        let a_week_ago = Utc::now().timestamp() - (PEER_ACTIVE_WITHIN_DURATION + 60) as i64; // A week ago + a minute
+        let above_the_threshold = Utc::now().timestamp() - (STALE_PEER_THRESHOLD_DURATION.as_secs() + 60) as i64;
 
         let never_seen_peer = create_test_peer(PeerFeatures::COMMUNICATION_NODE, false);
         let banned_peer = create_test_peer(PeerFeatures::COMMUNICATION_NODE, true);
@@ -861,7 +952,7 @@ mod test {
         let mut not_active_peer = create_test_peer(PeerFeatures::COMMUNICATION_NODE, false);
         let address = not_active_peer.addresses.best().unwrap();
         let mut address = MultiaddrWithStats::new(address.address().clone(), PeerAddressSource::Config);
-        address.mark_last_attempted(DateTime::from_timestamp(a_week_ago, 0).unwrap().naive_utc());
+        address.mark_last_attempted(DateTime::from_timestamp(above_the_threshold, 0).unwrap().naive_utc());
         not_active_peer
             .addresses
             .merge(&MultiaddressesWithStats::from(vec![address]));
