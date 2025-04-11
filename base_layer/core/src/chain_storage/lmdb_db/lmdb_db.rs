@@ -1553,7 +1553,7 @@ impl LMDBDatabase {
         seed: &Vec<u8>,
         height: u64,
     ) -> Result<(), ChainStorageError> {
-        let current_height = lmdb_get(write_txn, &self.monero_seed_height_db, seed)?;
+        let current_height: Option<u64> = lmdb_get(write_txn, &self.monero_seed_height_db, seed)?;
         match current_height {
             Some(current_height) => {
                 if height < current_height {
