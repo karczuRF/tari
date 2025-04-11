@@ -272,7 +272,7 @@ where B: BlockchainBackend + 'static
                 // this will wait a max of 150ms by default before returning anyway with a potential broken template
                 // We need to ensure the mempool has seen the latest base node height before we can be confident the
                 // template is correct
-                while !is_mempool_synced && start.elapsed().as_millis() < MAX_MEMPOOL_TIMEOUT.into() {
+                while !is_mempool_synced && start.elapsed().as_millis() < Into::<u128>::into(MAX_MEMPOOL_TIMEOUT)  {
                     if best_block_header.hash() == &last_seen_hash || last_seen_hash == FixedHash::default() {
                         is_mempool_synced = true;
                     } else {
