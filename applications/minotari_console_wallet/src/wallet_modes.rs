@@ -635,7 +635,6 @@ mod test {
                 CliCommands::PreMineSpendBackupUtxo(_) => {},
                 CliCommands::Sync(_) => {},
                 CliCommands::ExportViewKeyAndSpendKey(_) => {},
-                CliCommands::SendMultisig(_) => {},
                 CliCommands::SendMultisigStart(_) => {},
                 CliCommands::SendMultisigStartParty(_) => {},
                 CliCommands::SendMultisigEncumber(_) => {},

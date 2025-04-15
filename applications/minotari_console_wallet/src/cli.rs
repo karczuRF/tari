@@ -33,10 +33,7 @@ use minotari_app_utilities::{common_cli_args::CommonCliArgs, utilities::UniPubli
 use tari_common::configuration::{ConfigOverrideProvider, Network};
 use tari_common_types::tari_address::TariAddress;
 use tari_comms::multiaddr::Multiaddr;
-use tari_core::transactions::{
-    tari_amount::{self, MicroMinotari},
-    transaction_components::TransactionOutput,
-};
+use tari_core::transactions::tari_amount::{self, MicroMinotari};
 use tari_key_manager::SeedWords;
 use tari_utilities::{
     hex::{Hex, HexError},
@@ -175,12 +172,11 @@ pub enum CliCommands {
     Sync(SyncArgs),
     ExportViewKeyAndSpendKey(ExportViewKeyAndSpendKeyArgs),
     ImportPaperWallet(ImportPaperWalletArgs),
-    SendMultisig(SendMultisigArgs),
     SendMultisigStart(SendMultisigStartSessionArgs),
-    SendMultisigStartParty(PreMineSpendPartyDetailsArgs),
-    SendMultisigEncumber(PreMineSpendEncumberAggregateUtxoArgs),
-    SendMultisigSigs(PreMineSpendInputOutputSigArgs),
-    SendMultisigSpendTx(PreMineSpendAggregateTransactionArgs),
+    SendMultisigStartParty(SendMultisigSpendPartyDetailsArgs),
+    SendMultisigEncumber(SpendEncumberAggregateUtxoArgs),
+    SendMultisigSigs(SpendInputOutputSigArgs),
+    SendMultisigSpendTx(SpendAggregateTransactionArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -283,6 +279,16 @@ pub struct PreMineSpendPartyDetailsArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+pub struct SendMultisigSpendPartyDetailsArgs {
+    #[clap(long)]
+    pub input_file: Option<String>,
+    #[clap(long)]
+    pub utxo_list_file_path: Option<PathBuf>,
+    #[clap(long, default_value = "")]
+    pub alias: String,
+}
+
+#[derive(Debug, Args, Clone)]
 pub struct PreMineSpendEncumberAggregateUtxoArgs {
     #[clap(long, default_value = "")]
     pub session_id: String,
@@ -290,6 +296,18 @@ pub struct PreMineSpendEncumberAggregateUtxoArgs {
     pub member: Vec<String>,
     #[clap(long)]
     pub pre_mine_file_path: Option<PathBuf>,
+    #[clap(short, long, default_value = "Spend pre-mine encumber aggregate UTXO")]
+    pub payment_id: String,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct SpendEncumberAggregateUtxoArgs {
+    #[clap(long, default_value = "")]
+    pub session_id: String,
+    #[clap(long)]
+    pub member: Vec<String>,
+    #[clap(long)]
+    pub utxo_list_file_path: Option<PathBuf>,
     #[clap(short, long, default_value = "Spend pre-mine encumber aggregate UTXO")]
     pub payment_id: String,
 }
@@ -303,7 +321,23 @@ pub struct PreMineSpendInputOutputSigArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+pub struct SpendInputOutputSigArgs {
+    #[clap(long, default_value = "")]
+    pub session_id: String,
+    #[clap(long)]
+    pub utxo_list_file_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
 pub struct PreMineSpendAggregateTransactionArgs {
+    #[clap(long, default_value = "")]
+    pub session_id: String,
+    #[clap(long)]
+    pub member: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct SpendAggregateTransactionArgs {
     #[clap(long, default_value = "")]
     pub session_id: String,
     #[clap(long)]

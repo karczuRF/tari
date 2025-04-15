@@ -720,19 +720,6 @@ pub async fn monitor_transactions(
     results
 }
 
-pub async fn send_multisig(
-    mut wallet_transaction_service: TransactionServiceHandle,
-    fee_per_gram: u64,
-    amount: MicroMinotari,
-    selection_criteria: UtxoSelectionCriteria,
-    dest_address: TariAddress,
-    payment_id: PaymentId,
-) -> Result<TxId, CommandError> {
-    //TODO dupa
-    println!("dupa");
-    return Ok(TxId::new_random());
-}
-
 #[allow(clippy::too_many_lines)]
 pub async fn command_runner(
     config: &WalletConfig,
@@ -1682,7 +1669,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            //TODO dupa
+            //TODO bridge multisig commanda
             SendMultisigSigs(args) => {
                 let session_info;
                 // Read session info
@@ -1746,17 +1733,9 @@ pub async fn command_runner(
                     break;
                 }
 
-                // TODO remove
-                // let pre_mine_from_file =
-                //     match read_genesis_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
-                //         Ok(outputs) => outputs,
-                //         Err(e) => {
-                //             eprintln!("\nError: {}\n", e);
-                //             break;
-                //         },
-                //     };
+                // TODO UTXOS read_utxos_file_outputs
                 let utxos_from_file =
-                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.utxo_list_file_path) {
                         Ok(outputs) => outputs,
                         Err(e) => {
                             eprintln!("\nError: {}\n", e);
@@ -2306,7 +2285,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO dupa
+            // TODO bridge multisig commanda
             SendMultisigSpendTx(args) => {
                 temp_ban_peers(&wallet, &mut peer_list).await;
                 unban_peer_manager_peers = true;
@@ -3329,29 +3308,8 @@ pub async fn command_runner(
                 println!("removing temp wallet in: {:?}", temp_path);
                 fs::remove_dir_all(temp_path)?;
             },
-            SendMultisig(args) => {
-                match send_multisig(
-                    transaction_service.clone(),
-                    config.fee_per_gram,
-                    args.amount,
-                    UtxoSelectionCriteria::default(),
-                    args.destination.clone(),
-                    PaymentId::open(&args.payment_id, detect_tx_metadata(&wallet, args.destination).await),
-                )
-                .await
-                {
-                    Ok(tx_id) => {
-                        debug!(
-                            target: LOG_TARGET,
-                            "send-multisig concluded with tx_id {}", tx_id
-                        );
-                        tx_ids.push(tx_id);
-                    },
-                    Err(e) => eprintln!("SendMultisig error! {}", e),
-                }
-            },
 
-            // TODO dupa
+            // TODO bridge multisig commanda
             SendMultisigStart(args) => {
                 let args_recipient_info = sort_args_recipient_info(args.recipient_info);
                 if let Err(e) = verify_no_duplicate_indexes(&args_recipient_info) {
@@ -3397,7 +3355,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO dupa
+            // TODO bridge multisig commanda
             SendMultisigStartParty(args) => {
                 let mut alias = args.alias.clone();
                 loop {
@@ -3440,7 +3398,7 @@ pub async fn command_runner(
                 // session_info.recipient_info
 
                 let pre_mine_from_file =
-                    match read_genesis_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                    match read_genesis_file_outputs(session_info.use_pre_mine_input_file, args.utxo_list_file_path) {
                         Ok(outputs) => outputs,
                         Err(e) => {
                             eprintln!("\nError: {}\n", e);
@@ -3574,7 +3532,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO dupa
+            // TODO bridge multisig commanda
             SendMultisigEncumber(args) => {
                 let session_info;
                 // Read session info
@@ -3663,7 +3621,7 @@ pub async fn command_runner(
 
                 // TODO remove
                 let utxos_from_file =
-                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.pre_mine_file_path) {
+                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.utxo_list_file_path) {
                         Ok(outputs) => outputs,
                         Err(e) => {
                             eprintln!("\nError: {}\n", e);
