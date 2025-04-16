@@ -15,12 +15,16 @@ use blake2::{digest::consts::U64, Blake2b};
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 use serde::{de::DeserializeOwned, Serialize};
 use tari_common::configuration::Network;
-use tari_common_types::types::PrivateKey;
+use tari_common_types::types::{PrivateKey, PublicKey};
 use tari_core::transactions::transaction_components::{TransactionKernel, TransactionOutput};
 use tari_crypto::{hasher, keys::SecretKey};
 use tari_utilities::{encoding::Base58, ByteArray};
 
-use super::{commands::FILE_EXTENSION, error::CommandError};
+use super::{
+    bridge::{BridgeItem, CreateBridgeUtxoScriptInputsForLeader},
+    commands::{FILE_EXTENSION, STEP_1_FAIL_SAFE_LEADER, STEP_1_LEADER},
+    error::CommandError,
+};
 
 /// Set terminal/console title on non-Windows systems
 #[cfg(not(target_os = "windows"))]
@@ -216,4 +220,232 @@ pub(crate) fn read_genesis_file(file_path: &Path) -> Result<(Vec<TransactionOutp
         kernel.ok_or_else(|| CommandError::PreMine(format!("No kernel found in '{}'", file_path.display())))?;
 
     Ok((outputs, kernel))
+}
+
+pub fn read_inputs_from_party_members(
+    file_path: &Path,
+) -> Result<(Vec<PathBuf>, Vec<Vec<CreateBridgeUtxoScriptInputsForLeader>>), String> {
+    let mut party_files = Vec::new();
+    let mut threshold_inputs = Vec::new();
+    match fs::read_dir(file_path) {
+        Ok(entries) => {
+            for file in entries.flatten() {
+                if let Some(file_name) = file.path().file_name() {
+                    if let Some(val) = file_name.to_str() {
+                        if (val.starts_with(STEP_1_LEADER) || val.starts_with(STEP_1_FAIL_SAFE_LEADER))
+                            && val.ends_with(FILE_EXTENSION)
+                        {
+                            let party_info = match json_from_file_single_object::<
+                                _,
+                                Vec<CreateBridgeUtxoScriptInputsForLeader>,
+                            >(file.path(), None)
+                            {
+                                Ok(info) => info,
+                                Err(e) => return Err(format!("{}", e)),
+                            };
+                            threshold_inputs.push(party_info);
+                            party_files.push(file.path());
+                        }
+                    }
+                }
+            }
+        },
+        Err(e) => return Err(format!("{}", e)),
+    }
+    Ok((party_files, threshold_inputs))
+}
+
+pub fn get_fail_safe_wallet(
+    threshold_inputs: &mut Vec<Vec<CreateBridgeUtxoScriptInputsForLeader>>,
+    party_files: &mut Vec<PathBuf>,
+) -> Result<(PathBuf, Vec<CreateBridgeUtxoScriptInputsForLeader>), String> {
+    if threshold_inputs.len() != party_files.len() {
+        return Err("Error: Threshold inputs and party files have different lengths!".to_string());
+    }
+
+    let mut fail_safe_wallet_index = None;
+    for (i, item) in threshold_inputs.iter().enumerate() {
+        if let Some(pre_mine_entry) = item.first() {
+            if threshold_inputs.len() != pre_mine_entry.multi_sig_count as usize + 1 {
+                return Err(format!(
+                    "Error: Incorrect number of party files, expected {}, received {}!",
+                    pre_mine_entry.multi_sig_count as usize + 1,
+                    threshold_inputs.len(),
+                ));
+            }
+            let challenge = match get_proof_signature_challenge(true, 0, pre_mine_entry.multi_sig_count) {
+                Ok(val) => val,
+                Err(e) => {
+                    return Err(format!(
+                        "Error: Could not create signature challenge for output 0: {}",
+                        e
+                    ));
+                },
+            };
+            if pre_mine_entry
+                .verification_signature
+                .verify(&pre_mine_entry.script_public_key, challenge.as_bytes())
+            {
+                if fail_safe_wallet_index.is_some() {
+                    return Err("Error: Multiple fail-safe wallets found!".to_string());
+                }
+                fail_safe_wallet_index = Some(i);
+            }
+        } else {
+            return Err(format!("Error: Empty input file '{}'", party_files[i].display()));
+        }
+    }
+
+    if let Some(index) = fail_safe_wallet_index {
+        let backup_inputs = threshold_inputs.remove(index);
+        let fail_safe_file = party_files.remove(index);
+        Ok((fail_safe_file, backup_inputs))
+    } else {
+        Err("Error: No fail-safe wallet found!".to_string())
+    }
+}
+
+pub fn verify_script_bridge_inputs(
+    threshold_inputs: &[Vec<CreateBridgeUtxoScriptInputsForLeader>],
+    backup_inputs: &[CreateBridgeUtxoScriptInputsForLeader],
+    party_file_names: &[PathBuf],
+    fail_safe_file_name: &Path,
+    bridge_items: &[BridgeItem],
+    network: Network,
+) -> Result<(), String> {
+    for (k, party_info) in threshold_inputs.iter().enumerate() {
+        verify_party_script_inputs(&party_file_names[k], party_info, bridge_items, network, false)?;
+    }
+    verify_party_script_inputs(fail_safe_file_name, backup_inputs, bridge_items, network, true)?;
+
+    // Ensure no keys for the same index are duplicated
+    let (_threshold_spend_keys, _backup_spend_keys, mut all_spend_keys) =
+        extract_threshold_and_backup_spend_keys(threshold_inputs, backup_inputs)?;
+    for (i, keys) in all_spend_keys.iter_mut().enumerate() {
+        let keys_len = keys.len();
+        keys.sort();
+        keys.dedup();
+        if keys.len() != keys_len {
+            return Err(format!("Duplicate script keys for index '{}'!", i));
+        }
+    }
+    // Ensure no keys for any index are duplicated
+    let mut all_spend_keys_flattened = all_spend_keys.into_iter().flatten().collect::<Vec<_>>();
+    all_spend_keys_flattened.sort();
+    let all_spend_keys_len = all_spend_keys_flattened.len();
+    all_spend_keys_flattened.dedup();
+    if all_spend_keys_flattened.len() != all_spend_keys_len {
+        return Err("Duplicate script keys across parties!".to_string());
+    }
+
+    Ok(())
+}
+
+fn verify_party_script_inputs(
+    party_file_name: &Path,
+    party_info: &[CreateBridgeUtxoScriptInputsForLeader],
+    bridge_items: &[BridgeItem],
+    network: Network,
+    fail_safe_wallet: bool,
+) -> Result<(), String> {
+    if party_info.len() != bridge_items.len() {
+        return Err(format!(
+            "Number of items in '{}' does not match the pre-mine items!",
+            party_file_name.display()
+        ));
+    }
+    // Ensure each key is unique
+    let mut script_keys = party_info
+        .iter()
+        .map(|v| v.script_public_key.clone())
+        .collect::<Vec<_>>();
+    script_keys.sort();
+    script_keys.dedup();
+    if script_keys.len() != bridge_items.len() {
+        return Err(format!("Duplicate script keys in '{}'!", party_file_name.display()));
+    }
+    // Verify knowledge of the script private key
+    for (index, item) in party_info.iter().enumerate() {
+        let challenge = match get_proof_signature_challenge(fail_safe_wallet, index as u64, item.multi_sig_count) {
+            Ok(val) => val,
+            Err(e) => {
+                return Err(format!(
+                    "Error: Could not create signature challenge for output 0: {}",
+                    e
+                ));
+            },
+        };
+        if !item
+            .verification_signature
+            .verify(&item.script_public_key, challenge.as_bytes())
+        {
+            return Err(format!(
+                "Verification signature at index {} in '{}' is not valid!",
+                index,
+                party_file_name.display()
+            ));
+        }
+        if item.index != index as u64 {
+            return Err(format!(
+                "Index {} in '{}' does not align!",
+                index,
+                party_file_name.display()
+            ));
+        }
+        if item.network != network {
+            return Err(format!(
+                "Network '{}' in '{}' does not align with the current network!",
+                item.network,
+                party_file_name.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+type PublicKeyVec = Vec<PublicKey>;
+
+pub fn extract_threshold_and_backup_spend_keys(
+    threshold_inputs: &[Vec<CreateBridgeUtxoScriptInputsForLeader>],
+    backup_inputs: &[CreateBridgeUtxoScriptInputsForLeader],
+) -> Result<(Vec<PublicKeyVec>, PublicKeyVec, Vec<PublicKeyVec>), String> {
+    for item in threshold_inputs {
+        if item.is_empty() || item.len() != backup_inputs.len() {
+            return Err("Threshold/backup inputs empty or have different lengths!".to_string());
+        }
+    }
+    let mut threshold_spend_keys = Vec::with_capacity(threshold_inputs[0].len());
+    let mut backup_spend_keys = Vec::with_capacity(threshold_inputs[0].len());
+    let mut all_spend_keys = Vec::with_capacity(threshold_inputs[0].len());
+    for i in 0..threshold_inputs[0].len() {
+        let mut keys_for_round = Vec::with_capacity(threshold_inputs.len());
+        for party_info in threshold_inputs {
+            keys_for_round.push(party_info[i].script_public_key.clone());
+        }
+        threshold_spend_keys.push(keys_for_round.clone());
+        backup_spend_keys.push(backup_inputs[i].clone().script_public_key);
+        keys_for_round.push(backup_inputs[i].clone().script_public_key);
+        all_spend_keys.push(keys_for_round);
+    }
+    Ok((threshold_spend_keys, backup_spend_keys, all_spend_keys))
+}
+
+/// Create a unique session-based output directory
+pub(crate) fn create_multisig_utxo_output_dir(
+    alias: Option<&str>,
+    network: Option<Network>,
+) -> Result<(String, PathBuf), CommandError> {
+    let mut session_id = PrivateKey::random(&mut OsRng).to_base58();
+    session_id.truncate(10);
+    if let Some(alias) = alias {
+        session_id.push('_');
+        session_id.push_str(alias);
+    }
+    if let Some(network) = network {
+        session_id.push_str(&format!("_{}", network));
+    }
+    let out_dir = out_dir(&session_id)?;
+    fs::create_dir_all(out_dir.clone())
+        .map_err(|e| CommandError::JsonFile(format!("{} ({})", e, out_dir.display())))?;
+    Ok((session_id, out_dir))
 }

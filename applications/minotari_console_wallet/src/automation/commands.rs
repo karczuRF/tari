@@ -26,9 +26,9 @@ use std::{
     convert::TryInto,
     fs::{self, File},
     io::{self, BufRead, BufReader, LineWriter, Write},
+    iter::once,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -86,14 +86,11 @@ use tari_core::{
             TransactionOutput, TransactionOutputVersion, UnblindedOutput, WalletOutput,
         },
         transaction_key_manager::{TariKeyId, TransactionKeyManagerInterface},
-        transaction_protocol::sender::KeyId,
         CryptoFactories,
     },
 };
 use tari_crypto::{
-    commitment::HomomorphicCommitmentFactory,
-    dhke::DiffieHellmanSharedSecret,
-    ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+    commitment::HomomorphicCommitmentFactory, dhke::DiffieHellmanSharedSecret, ristretto::RistrettoSecretKey,
 };
 use tari_key_manager::{cipher_seed::CipherSeed, SeedWords};
 use tari_p2p::{auto_update::AutoUpdateConfig, peer_seeds::SeedPeer, PeerSeedsConfig};
@@ -109,11 +106,14 @@ use super::error::CommandError;
 use crate::{
     automation::{
         bridge::{
-            create_memory_db_key_manager, BridgeItem, CreateBridgeUtxoScriptInputsForLeader,
+            create_utxo_bridge_info, BridgeItem, CreateBridgeUtxoScriptInputsForLeader,
             CreateBridgeUtxoScriptInputsForSelf,
         },
         bridge_utils::{
-            create_pre_mine_output_dir_with_network, get_file_name_with_network, get_proof_signature_challenge,
+            create_multisig_utxo_output_dir, create_pre_mine_output_dir_with_network,
+            extract_threshold_and_backup_spend_keys, get_bridge_utxo_file_name, get_fail_safe_wallet,
+            get_file_name_with_network, get_proof_signature_challenge, read_inputs_from_party_members,
+            verify_script_bridge_inputs,
         },
         utils::{
             create_pre_mine_output_dir, get_file_name, move_session_file_to_session_dir, out_dir, read_and_verify,
@@ -141,10 +141,10 @@ pub(crate) const SPEND_STEP_3_SELF: &str = "step_3_for_self";
 pub(crate) const SPEND_STEP_3_PARTIES: &str = "step_3_for_parties";
 pub(crate) const SPEND_STEP_4_LEADER: &str = "step_4_for_leader_from_";
 // The name of the application
-const CONSOLE_TITLE: &str = "Multi-party Pre-mine Generation TUI";
-const STEP_1_LEADER: &str = "step_1_for_leader_from_";
-const STEP_1_FAIL_SAFE_LEADER: &str = "step_1_for_leader_fail_safe_from_";
-const STEP_1_SELF: &str = "step_1_for_self";
+pub(crate) const CONSOLE_TITLE: &str = "Multi-party Pre-mine Generation TUI";
+pub(crate) const STEP_1_LEADER: &str = "step_1_for_leader_from_";
+pub(crate) const STEP_1_FAIL_SAFE_LEADER: &str = "step_1_for_leader_fail_safe_from_";
+pub(crate) const STEP_1_SELF: &str = "step_1_for_self";
 
 #[derive(Debug)]
 pub struct SentTransaction {}
@@ -3915,15 +3915,17 @@ pub async fn command_runner(
                 if let Err(e) = file_stream
                     .write_all("index,value,maturity,original_maturity,fail_safe_height,beneficiary\n".as_bytes())
                 {
-                    eprintln!("\nError: Could not write pre-mine header ({})\n", e);
-                    return Ok(false);
+                    eprintln!("\nError: Could not write file header ({})\n", e);
+                    return Err(CommandError::MultisigUtxo(
+                        "Could not write utxo-list file header".to_string(),
+                    ));
                 }
                 for (index, item) in bridge_items.iter().enumerate() {
                     if let Err(e) = file_stream
                         .write_all(format!("{},{}, {}\n", index, item.value, item.destination_address).as_bytes())
                     {
-                        eprintln!("\nError: Could not write pre-mine item ({})\n", e);
-                        return Ok(false);
+                        eprintln!("\nError: Could not write item ({})\n", e);
+                        return Err(CommandError::MultisigUtxo("Could not write utxo-list item".to_string()));
                     }
                 }
 
@@ -3948,7 +3950,147 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            CreateMultisigUtxo(args) => {},
+            CreateMultisigUtxo(args) => {
+                println!("\nRunning CreateMultisigUtxo ...");
+
+                // Read inputs from party members
+                let (mut party_files, mut threshold_inputs) =
+                    match read_inputs_from_party_members(&args.party_files_path) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo(
+                                "read_inputs_from_party_members error".to_string(),
+                            ));
+                        },
+                    };
+
+                let (fail_safe_file, backup_inputs) = get_fail_safe_wallet(&mut threshold_inputs, &mut party_files)
+                    .map_err(|e| CommandError::MultisigUtxo(e))?;
+
+                // Get the pre-mine items according to the unlock schedule specification
+                // let bridge_items = match get_pre_mine_items(network).await {
+                //     Ok(items) => items,
+                //     Err(e) => {
+                //         eprintln!("\nError: {}\n", e);
+                //         return Ok(());
+                //     },
+                // };
+                // TODO define bridge item
+                let mut bridge_items: Vec<BridgeItem> = vec![];
+                bridge_items.push(BridgeItem {
+                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
+                    destination_address: "0x123".to_ascii_lowercase(),
+                    fail_safe_height: 1000000,
+                    maturity: 100,
+                });
+
+                let network = Network::get_current_or_user_setting_or_default();
+                // Perform party members input verification
+                if let Err(e) = verify_script_bridge_inputs(
+                    &threshold_inputs,
+                    &backup_inputs,
+                    &party_files,
+                    &fail_safe_file,
+                    &bridge_items,
+                    network,
+                ) {
+                    eprintln!("\nError: {}\n", e);
+                    return Err(CommandError::MultisigUtxo(
+                        "verify_script_bridge_inputs error".to_string(),
+                    ));
+                }
+
+                // Extract the threshold and backup spend keys
+                let (threshold_spend_keys, backup_spend_keys, _all_spend_keys) =
+                    match extract_threshold_and_backup_spend_keys(&threshold_inputs, &backup_inputs) {
+                        Ok(keys) => keys,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo(
+                                "verify_script_bridge_inputs error".to_string(),
+                            ));
+                        },
+                    };
+
+                // Create the pre-mine genesis block outputs and kernel
+                let (outputs, kernel) =
+                    match create_utxo_bridge_info(&bridge_items, &threshold_spend_keys, &backup_spend_keys).await {
+                        Ok(values) => values,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo("create_utxo_bridge_info error".to_string()));
+                        },
+                    };
+
+                // Create the genesis file
+                let (session_id, out_dir) = match create_multisig_utxo_output_dir(Some("leader"), Some(network)) {
+                    Ok(values) => values,
+                    Err(e) => {
+                        eprintln!("\nError: {}\n", e);
+                        return Err(CommandError::MultisigUtxo(
+                            "create_pre_mine_output_dir error".to_string(),
+                        ));
+                    },
+                };
+                let file_name = get_bridge_utxo_file_name();
+                let out_file = out_dir.join(&file_name);
+                let mut file_stream = match File::create(&out_file) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        eprintln!("\nError: Could not create teh pre-mine file ({})\n", e);
+                        return Err(CommandError::MultisigUtxo(
+                            "get_bridge_utxo_file_name error".to_string(),
+                        ));
+                    },
+                };
+
+                let mut error = false;
+                for output in outputs {
+                    let utxo_s = match serde_json::to_string(&output) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
+                        eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                        error = true;
+                        break;
+                    }
+                }
+                if error {
+                    return Err(CommandError::MultisigUtxo("error".to_string()));
+                }
+                let kernel = match serde_json::to_string(&kernel) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        eprintln!("\nError: Could not serialize kernel ({})\n", e);
+                        return Err(CommandError::MultisigUtxo("error".to_string()));
+                    },
+                };
+                if let Err(e) = file_stream.write_all(format!("{}\n", kernel).as_bytes()) {
+                    eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                    return Err(CommandError::MultisigUtxo("error".to_string()));
+                }
+
+                for file in party_files.iter().chain(once(&fail_safe_file)) {
+                    let out_file = out_dir.join(file.file_name().expect("Path exists"));
+                    let _res = fs::copy(file.clone(), out_file.clone());
+                    let _res = fs::remove_file(file.clone());
+                }
+
+                println!();
+                println!("Concluded 'step2-genesis-file'");
+                println!("Your session ID is:                 '{}'", session_id);
+                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!("Party files moved to :              '{}'", out_dir.display());
+                println!("Outputs written to:                 '{}'", file_name);
+                println!("Please send '{}' to parties for step 3", file_name);
+                println!();
+            },
         }
     }
     if unban_peer_manager_peers {
