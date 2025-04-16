@@ -21,7 +21,6 @@
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::{
-    any::Any,
     cmp::{max, min},
     collections::HashMap,
     convert::TryInto,
@@ -87,13 +86,16 @@ use tari_core::{
             TransactionOutput, TransactionOutputVersion, UnblindedOutput, WalletOutput,
         },
         transaction_key_manager::{TariKeyId, TransactionKeyManagerInterface},
+        transaction_protocol::sender::KeyId,
         CryptoFactories,
     },
 };
 use tari_crypto::{
-    commitment::HomomorphicCommitmentFactory, dhke::DiffieHellmanSharedSecret, ristretto::RistrettoSecretKey,
+    commitment::HomomorphicCommitmentFactory,
+    dhke::DiffieHellmanSharedSecret,
+    ristretto::{RistrettoPublicKey, RistrettoSecretKey},
 };
-use tari_key_manager::{cipher_seed::CipherSeed, key_manager_service::KeyId, SeedWords};
+use tari_key_manager::{cipher_seed::CipherSeed, SeedWords};
 use tari_p2p::{auto_update::AutoUpdateConfig, peer_seeds::SeedPeer, PeerSeedsConfig};
 use tari_script::{push_pubkey_script, CompressedCheckSigSchnorrSignature};
 use tari_shutdown::Shutdown;
@@ -122,7 +124,7 @@ use crate::{
         RecipientInfo, Step2OutputsForLeader, Step2OutputsForSelf, Step3OutputsForParties, Step3OutputsForSelf,
         Step4OutputsForLeader,
     },
-    cli::{self, CliCommands, CliRecipientInfo, MakeItRainTransactionType},
+    cli::{CliCommands, CliRecipientInfo, MakeItRainTransactionType},
     init::init_wallet,
     recovery::{get_seed_from_seed_words, wallet_recovery},
     utils::db::{get_custom_base_node_peer_from_db, CUSTOM_BASE_NODE_ADDRESS_KEY, CUSTOM_BASE_NODE_PUBLIC_KEY_KEY},
@@ -3798,23 +3800,17 @@ pub async fn command_runner(
             CreateMultisigUtxoParty(args) => {
                 println!("\nRunning 'step1-script-inputs' of 'Tari Pre-mine Generation' ...\n");
 
-                let view_key = wallet.key_manager_service.get_view_key().await?;
-                let spend_key = wallet.key_manager_service.get_spend_key().await?;
-                let view_key_hex = view_key.pub_key.to_hex();
-                let private_view_key_hex = wallet.key_manager_service.get_private_view_key().await?.to_hex();
-                let spend_key_hex = spend_key.pub_key.to_hex();
-
-                let wallet_type = Arc::new(WalletType::default()); //TODO get from wallet
-                let key_manager_service = create_memory_db_key_manager(wallet_type)?; //TODO
-                println!("\nWalelt done\n");
-
                 if args.alias.is_empty() || args.alias.contains(" ") {
                     eprintln!("\nError: Alias cannot contain spaces!\n");
-                    return Ok(false);
+                    return Err(CommandError::InvalidArgument(
+                        "Alias cannot contain spaces!".to_string(),
+                    ));
                 }
                 if args.alias.chars().any(|c| !c.is_alphanumeric() && c != '_') {
                     eprintln!("\nError: Alias contains invalid characters! Only alphanumeric and '_' are allowed.\n");
-                    return Ok(false);
+                    return Err(CommandError::InvalidArgument(
+                        "Alias contains invalid characters! Only alphanumeric and '_' are allowed.".to_string(),
+                    ));
                 }
 
                 // TODO define bridge item
@@ -3853,10 +3849,11 @@ pub async fn command_runner(
                 let mut outputs_for_leader = Vec::with_capacity(bridge_items.len());
                 let mut error = false;
                 for index in 0..bridge_items.len() as u64 {
-                    let key_id = KeyId::Managed {
+                    let key_id = TariKeyId::Managed {
                         branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
                         index,
                     };
+
                     let script_public_key = match key_manager_service.get_public_key_at_key_id(&key_id).await {
                         Ok(key) => key,
                         Err(e) => {
@@ -3888,10 +3885,11 @@ pub async fn command_runner(
                             break;
                         },
                     };
+
                     outputs_for_leader.push(CreateBridgeUtxoScriptInputsForLeader {
                         index,
-                        script_public_key,
-                        verification_signature,
+                        script_public_key: script_public_key.to_public_key().unwrap(),
+                        verification_signature: verification_signature.to_schnorr_signature().unwrap(),
                         network,
                         multi_sig_count: args.multi_sig_count,
                     });

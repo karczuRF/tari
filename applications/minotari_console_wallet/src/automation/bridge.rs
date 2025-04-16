@@ -5,15 +5,18 @@ use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng, RngCore};
 use tari_common::configuration::Network;
 use tari_common_sqlite::connection::{DbConnection, DbConnectionUrl};
-use tari_common_types::types::Signature;
+use tari_common_types::types::{CompressedCommitment, CompressedPublicKey};
 use tari_common_types::wallet_types::WalletType;
+use tari_comms::types::Signature;
 use tari_core::transactions::transaction_key_manager::create_memory_db_key_manager_with_range_proof_size;
+use tari_crypto::compressed_key::CompressedKey;
+use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_crypto::signatures::CompressedSchnorrSignature;
 use tari_key_manager::cipher_seed::CipherSeed;
 use zeroize::Zeroizing;
 
 use tari_core::{
     one_sided::public_key_to_output_encryption_key,
-    proto::types::Commitment,
     transactions::{
         tari_amount::MicroMinotari,
         transaction_components::{
@@ -114,9 +117,17 @@ pub async fn create_utxo_bridge_info(
         .enumerate()
     {
         let signature_threshold = get_signature_threshold(public_keys.len())?;
+
+        // TODO verify if this makes sense
+        let compressed_public_keys: Vec<CompressedKey<RistrettoPublicKey>> = public_keys
+            .iter()
+            .map(|item| CompressedKey::new_from_pk((*item).clone()))
+            .collect();
         let total_script_key = public_keys.iter().fold(PublicKey::default(), |acc, x| acc + x);
+        let compressed_total_script_key = CompressedKey::new_from_pk(total_script_key);
+
         let key_manager = create_memory_db_key_manager_with_range_proof_size(64).unwrap();
-        let view_key = public_key_to_output_encryption_key(&total_script_key).unwrap();
+        let view_key = public_key_to_output_encryption_key(&compressed_total_script_key).unwrap();
         let view_key_id = key_manager.import_key(view_key.clone()).await.unwrap();
         let address_len = u8::try_from(public_keys.len()).unwrap();
 
@@ -133,14 +144,17 @@ pub async fn create_utxo_bridge_info(
             .get_next_key(TransactionKeyManagerBranch::SenderOffset.get_branch_key())
             .await
             .unwrap();
-        let mut public_keys = public_keys.clone();
-        public_keys.shuffle(&mut thread_rng());
+        let mut compressed_public_keys = compressed_public_keys.clone();
+        compressed_public_keys.shuffle(&mut thread_rng());
+
+        // verify if this makes sense to create compressed
+        let compressed_backup = CompressedKey::new_from_pk((*backup_key).clone());
         let script = script!(
             CheckHeight(item.fail_safe_height) LeZero
             IfThen
-            CheckMultiSigVerifyAggregatePubKey(signature_threshold, address_len, public_keys.clone(), Box::new(commitment_bytes))
+            CheckMultiSigVerifyAggregatePubKey(signature_threshold, address_len, compressed_public_keys.clone(), Box::new(commitment_bytes))
             Else
-            PushPubKey(Box::new(backup_key.clone()))
+            PushPubKey(Box::new(compressed_backup.clone()))
             EndIf
         ).map_err(|e| e.to_string())?;
         let output = WalletOutputBuilder::new(item.value, commitment_mask.key_id)
@@ -172,16 +186,26 @@ pub async fn create_utxo_bridge_info(
     // lets create a single kernel for all the outputs
     let r = PrivateKey::random(&mut OsRng);
     let tx_meta = TransactionMetadata::new_with_features(0.into(), 0, KernelFeatures::empty());
-    let total_public_key = PublicKey::from_secret_key(&total_private_key);
+    let total_public_key = CompressedPublicKey::from_secret_key(&total_private_key);
     let e = TransactionKernel::build_kernel_challenge_from_tx_meta(
         &TransactionKernelVersion::get_current_version(),
-        &PublicKey::from_secret_key(&r),
+        &CompressedPublicKey::from_secret_key(&r),
         &total_public_key,
         &tx_meta,
     );
+
+    //TODO double check if types and arg are correct
     let signature = Signature::sign_raw_uniform(&total_private_key, r, &e).unwrap();
-    let excess = Commitment::from_public_key(&total_public_key);
-    let kernel = TransactionKernel::new_current_version(KernelFeatures::empty(), 0.into(), 0, excess, signature, None);
+    let compressed_signature = CompressedSchnorrSignature::new_from_schnorr(signature);
+    let excess = CompressedCommitment::from_public_key(total_public_key.to_public_key().unwrap());
+    let kernel = TransactionKernel::new_current_version(
+        KernelFeatures::empty(),
+        0.into(),
+        0,
+        excess,
+        compressed_signature,
+        None,
+    );
     Ok((outputs, kernel))
 }
 
