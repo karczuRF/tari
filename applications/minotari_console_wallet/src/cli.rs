@@ -172,13 +172,13 @@ pub enum CliCommands {
     Sync(SyncArgs),
     ExportViewKeyAndSpendKey(ExportViewKeyAndSpendKeyArgs),
     ImportPaperWallet(ImportPaperWalletArgs),
-    SendMultisigStart(SendMultisigStartSessionArgs),
-    SendMultisigStartParty(SendMultisigSpendPartyDetailsArgs),
-    SendMultisigEncumber(SpendEncumberAggregateUtxoArgs),
-    SendMultisigSigs(SpendInputOutputSigArgs),
-    SendMultisigSpendTx(SpendAggregateTransactionArgs),
-    CreateBridgeUtxoScriptInputs(CreateBridgeUtxoScriptInputsArgs),
-    CreateBridgeUtxo(CreateBridgeUtxoArgs),
+    FinaliseMultisigUtxoStart(FinaliseMultisigUtxoStartArgs),
+    FinaliseMultisigUtxoStartParty(FinaliseMultisigUtxoStartPartyArgs),
+    FinaliseMultisigUtxoEncumber(FinaliseMultisigUtxoEncumberArgs),
+    FinaliseMultisigUtxoSigs(FinaliseMultisigUtxoSigsArgs),
+    FinaliseMultisigUtxoSpendTx(FinaliseMultisigUtxoSpendTxArgs),
+    CreateMultisigUtxoParty(CreateMultisigUtxoPartyArgs),
+    CreateMultisigUtxo(CreateMultisigUtxoArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -214,7 +214,7 @@ pub struct PreMineStartSessionArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct SendMultisigStartSessionArgs {
+pub struct FinaliseMultisigUtxoStartArgs {
     #[clap(long, default_value = "1")]
     pub fee_per_gram: MicroMinotari,
     #[clap(long)]
@@ -281,7 +281,7 @@ pub struct PreMineSpendPartyDetailsArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct SendMultisigSpendPartyDetailsArgs {
+pub struct FinaliseMultisigUtxoStartPartyArgs {
     #[clap(long)]
     pub input_file: Option<String>,
     #[clap(long)]
@@ -303,7 +303,7 @@ pub struct PreMineSpendEncumberAggregateUtxoArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct SpendEncumberAggregateUtxoArgs {
+pub struct FinaliseMultisigUtxoEncumberArgs {
     #[clap(long, default_value = "")]
     pub session_id: String,
     #[clap(long)]
@@ -323,7 +323,7 @@ pub struct PreMineSpendInputOutputSigArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct SpendInputOutputSigArgs {
+pub struct FinaliseMultisigUtxoSigsArgs {
     #[clap(long, default_value = "")]
     pub session_id: String,
     #[clap(long)]
@@ -339,7 +339,7 @@ pub struct PreMineSpendAggregateTransactionArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub struct SpendAggregateTransactionArgs {
+pub struct FinaliseMultisigUtxoSpendTxArgs {
     #[clap(long, default_value = "")]
     pub session_id: String,
     #[clap(long)]
@@ -348,7 +348,7 @@ pub struct SpendAggregateTransactionArgs {
 
 /// This step is run by each party member and generates indexed script inputs for the leader for all bridge UTXOs
 #[derive(Debug, Args, Clone)]
-pub struct CreateBridgeUtxoScriptInputsArgs {
+pub struct CreateMultisigUtxoPartyArgs {
     #[clap(long)]
     pub(crate) alias: String,
     #[clap(long)]
@@ -361,7 +361,7 @@ pub struct CreateBridgeUtxoScriptInputsArgs {
 
 /// This step is run by the leader and generates the bridge UTXOs
 #[derive(Debug, Args, Clone)]
-pub struct CreateBridgeUtxoArgs {
+pub struct CreateMultisigUtxoArgs {
     #[clap(long)]
     pub(crate) party_files_path: PathBuf,
 }

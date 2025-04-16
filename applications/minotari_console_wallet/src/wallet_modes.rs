@@ -635,13 +635,13 @@ mod test {
                 CliCommands::PreMineSpendBackupUtxo(_) => {},
                 CliCommands::Sync(_) => {},
                 CliCommands::ExportViewKeyAndSpendKey(_) => {},
-                CliCommands::SendMultisigStart(_) => {},
-                CliCommands::SendMultisigStartParty(_) => {},
-                CliCommands::SendMultisigEncumber(_) => {},
-                CliCommands::SendMultisigSigs(_) => {},
-                CliCommands::SendMultisigSpendTx(_) => {},
-                CliCommands::CreateBridgeUtxo(_) => {},
-                CliCommands::CreateBridgeUtxoScriptInputs(_) => {},
+                CliCommands::FinaliseMultisigUtxoStart(_) => {},
+                CliCommands::FinaliseMultisigUtxoStartParty(_) => {},
+                CliCommands::FinaliseMultisigUtxoEncumber(_) => {},
+                CliCommands::FinaliseMultisigUtxoSigs(_) => {},
+                CliCommands::FinaliseMultisigUtxoSpendTx(_) => {},
+                CliCommands::CreateMultisigUtxo(_) => {},
+                CliCommands::CreateMultisigUtxoParty(_) => {},
             }
         }
         assert!(

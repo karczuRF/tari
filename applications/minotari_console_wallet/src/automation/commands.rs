@@ -1682,7 +1682,7 @@ pub async fn command_runner(
             },
 
             //TODO bridge multisig commanda
-            SendMultisigSigs(args) => {
+            FinaliseMultisigUtxoSigs(args) => {
                 let session_info;
                 // Read session info
                 let mut session_id = args.session_id.clone();
@@ -2298,7 +2298,7 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            SendMultisigSpendTx(args) => {
+            FinaliseMultisigUtxoSpendTx(args) => {
                 temp_ban_peers(&wallet, &mut peer_list).await;
                 unban_peer_manager_peers = true;
 
@@ -3322,7 +3322,7 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            SendMultisigStart(args) => {
+            FinaliseMultisigUtxoStart(args) => {
                 let args_recipient_info = sort_args_recipient_info(args.recipient_info);
                 if let Err(e) = verify_no_duplicate_indexes(&args_recipient_info) {
                     eprintln!("\nError: {} duplicate output indexes detected!\n", e);
@@ -3368,7 +3368,7 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            SendMultisigStartParty(args) => {
+            FinaliseMultisigUtxoStartParty(args) => {
                 let mut alias = args.alias.clone();
                 loop {
                     if alias.is_empty() || alias.contains(" ") {
@@ -3545,7 +3545,7 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            SendMultisigEncumber(args) => {
+            FinaliseMultisigUtxoEncumber(args) => {
                 let session_info;
                 // Read session info
                 let mut session_id = args.session_id.clone();
@@ -3795,7 +3795,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            CreateBridgeUtxoScriptInputs(args) => {
+            CreateMultisigUtxoParty(args) => {
                 println!("\nRunning 'step1-script-inputs' of 'Tari Pre-mine Generation' ...\n");
 
                 let view_key = wallet.key_manager_service.get_view_key().await?;
@@ -3950,7 +3950,7 @@ pub async fn command_runner(
             },
 
             // TODO bridge multisig command
-            CreateBridgeUtxo(args) => {},
+            CreateMultisigUtxo(args) => {},
         }
     }
     if unban_peer_manager_peers {
