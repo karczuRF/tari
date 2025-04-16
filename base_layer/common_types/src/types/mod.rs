@@ -31,12 +31,8 @@ use tari_crypto::{
     ristretto::{
         bulletproofs_plus::BulletproofsPlusService,
         pedersen::{extended_commitment_factory::ExtendedPedersenCommitmentFactory, CompressedPedersenCommitment},
-        CompressedRistrettoComAndPubSig,
-        CompressedRistrettoSchnorr,
-        RistrettoComAndPubSig,
-        RistrettoPublicKey,
-        RistrettoSchnorrWithDomain,
-        RistrettoSecretKey,
+        CompressedRistrettoComAndPubSig, CompressedRistrettoSchnorr, RistrettoComAndPubSig, RistrettoPublicKey,
+        RistrettoSchnorrWithDomain, RistrettoSecretKey,
     },
 };
 
@@ -62,6 +58,9 @@ pub type CommitmentFactory = ExtendedPedersenCommitmentFactory;
 /// Define the explicit Public key implementation for the Tari base layer
 pub type CompressedPublicKey = CompressedKey<RistrettoPublicKey>;
 pub type UncompressedPublicKey = RistrettoPublicKey;
+
+/// Define the explicit Public key implementation for the Tari base layer
+pub type PublicKey = RistrettoPublicKey;
 
 /// Define the explicit Secret key implementation for the Tari base layer.
 pub type PrivateKey = RistrettoSecretKey;

@@ -640,6 +640,8 @@ mod test {
                 CliCommands::SendMultisigEncumber(_) => {},
                 CliCommands::SendMultisigSigs(_) => {},
                 CliCommands::SendMultisigSpendTx(_) => {},
+                CliCommands::CreateBridgeUtxo(_) => {},
+                CliCommands::CreateBridgeUtxoScriptInputs(_) => {},
             }
         }
         assert!(

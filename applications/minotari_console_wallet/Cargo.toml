@@ -12,6 +12,7 @@ minotari_app_utilities = { workspace = true }
 minotari_ledger_wallet_comms = { workspace = true, optional = true }
 tari_common = { workspace = true }
 tari_common_types = { workspace = true }
+tari_common_sqlite = { workspace = true }
 tari_comms = { workspace = true }
 tari_comms_dht = { workspace = true }
 tari_contacts = { workspace = true }
@@ -74,7 +75,7 @@ url = "2.3.1"
 zeroize = "1"
 zxcvbn = "2"
 tui ={ version = "^0.19", default-features = false, features = ["crossterm"]}
-
+chacha20poly1305 = "0.10.1"
 
 [build-dependencies]
 tari_features = { workspace = true }

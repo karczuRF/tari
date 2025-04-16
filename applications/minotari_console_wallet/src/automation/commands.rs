@@ -21,15 +21,15 @@
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use std::{
+    any::Any,
     cmp::{max, min},
     collections::HashMap,
     convert::TryInto,
-    fs,
-    fs::File,
-    io,
-    io::{BufRead, BufReader, LineWriter, Write},
+    fs::{self, File},
+    io::{self, BufRead, BufReader, LineWriter, Write},
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -93,7 +93,7 @@ use tari_core::{
 use tari_crypto::{
     commitment::HomomorphicCommitmentFactory, dhke::DiffieHellmanSharedSecret, ristretto::RistrettoSecretKey,
 };
-use tari_key_manager::{cipher_seed::CipherSeed, SeedWords};
+use tari_key_manager::{cipher_seed::CipherSeed, key_manager_service::KeyId, SeedWords};
 use tari_p2p::{auto_update::AutoUpdateConfig, peer_seeds::SeedPeer, PeerSeedsConfig};
 use tari_script::{push_pubkey_script, CompressedCheckSigSchnorrSignature};
 use tari_shutdown::Shutdown;
@@ -106,6 +106,13 @@ use tokio::{
 use super::error::CommandError;
 use crate::{
     automation::{
+        bridge::{
+            create_memory_db_key_manager, BridgeItem, CreateBridgeUtxoScriptInputsForLeader,
+            CreateBridgeUtxoScriptInputsForSelf,
+        },
+        bridge_utils::{
+            create_pre_mine_output_dir_with_network, get_file_name_with_network, get_proof_signature_challenge,
+        },
         utils::{
             create_pre_mine_output_dir, get_file_name, move_session_file_to_session_dir, out_dir, read_and_verify,
             read_session_info, read_verify_session_info, write_json_object_to_file_as_line, write_to_json_file,
@@ -115,7 +122,7 @@ use crate::{
         RecipientInfo, Step2OutputsForLeader, Step2OutputsForSelf, Step3OutputsForParties, Step3OutputsForSelf,
         Step4OutputsForLeader,
     },
-    cli::{CliCommands, CliRecipientInfo, MakeItRainTransactionType},
+    cli::{self, CliCommands, CliRecipientInfo, MakeItRainTransactionType},
     init::init_wallet,
     recovery::{get_seed_from_seed_words, wallet_recovery},
     utils::db::{get_custom_base_node_peer_from_db, CUSTOM_BASE_NODE_ADDRESS_KEY, CUSTOM_BASE_NODE_PUBLIC_KEY_KEY},
@@ -131,6 +138,11 @@ pub(crate) const SPEND_STEP_2_SELF: &str = "step_2_for_self";
 pub(crate) const SPEND_STEP_3_SELF: &str = "step_3_for_self";
 pub(crate) const SPEND_STEP_3_PARTIES: &str = "step_3_for_parties";
 pub(crate) const SPEND_STEP_4_LEADER: &str = "step_4_for_leader_from_";
+// The name of the application
+const CONSOLE_TITLE: &str = "Multi-party Pre-mine Generation TUI";
+const STEP_1_LEADER: &str = "step_1_for_leader_from_";
+const STEP_1_FAIL_SAFE_LEADER: &str = "step_1_for_leader_fail_safe_from_";
+const STEP_1_SELF: &str = "step_1_for_self";
 
 #[derive(Debug)]
 pub struct SentTransaction {}
@@ -2285,7 +2297,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig commanda
+            // TODO bridge multisig command
             SendMultisigSpendTx(args) => {
                 temp_ban_peers(&wallet, &mut peer_list).await;
                 unban_peer_manager_peers = true;
@@ -3309,7 +3321,7 @@ pub async fn command_runner(
                 fs::remove_dir_all(temp_path)?;
             },
 
-            // TODO bridge multisig commanda
+            // TODO bridge multisig command
             SendMultisigStart(args) => {
                 let args_recipient_info = sort_args_recipient_info(args.recipient_info);
                 if let Err(e) = verify_no_duplicate_indexes(&args_recipient_info) {
@@ -3355,7 +3367,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig commanda
+            // TODO bridge multisig command
             SendMultisigStartParty(args) => {
                 let mut alias = args.alias.clone();
                 loop {
@@ -3532,7 +3544,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig commanda
+            // TODO bridge multisig command
             SendMultisigEncumber(args) => {
                 let session_info;
                 // Read session info
@@ -3782,6 +3794,163 @@ pub async fn command_runner(
                 );
                 println!();
             },
+
+            CreateBridgeUtxoScriptInputs(args) => {
+                println!("\nRunning 'step1-script-inputs' of 'Tari Pre-mine Generation' ...\n");
+
+                let view_key = wallet.key_manager_service.get_view_key().await?;
+                let spend_key = wallet.key_manager_service.get_spend_key().await?;
+                let view_key_hex = view_key.pub_key.to_hex();
+                let private_view_key_hex = wallet.key_manager_service.get_private_view_key().await?.to_hex();
+                let spend_key_hex = spend_key.pub_key.to_hex();
+
+                let wallet_type = Arc::new(WalletType::default()); //TODO get from wallet
+                let key_manager_service = create_memory_db_key_manager(wallet_type)?; //TODO
+                println!("\nWalelt done\n");
+
+                if args.alias.is_empty() || args.alias.contains(" ") {
+                    eprintln!("\nError: Alias cannot contain spaces!\n");
+                    return Ok(false);
+                }
+                if args.alias.chars().any(|c| !c.is_alphanumeric() && c != '_') {
+                    eprintln!("\nError: Alias contains invalid characters! Only alphanumeric and '_' are allowed.\n");
+                    return Ok(false);
+                }
+
+                // TODO define bridge item
+                let mut bridge_items: Vec<BridgeItem> = vec![];
+                bridge_items.push(BridgeItem {
+                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
+                    destination_address: "0x123".to_ascii_lowercase(),
+                    fail_safe_height: 1000000,
+                    maturity: 100,
+                });
+
+                let network = Network::get_current_or_user_setting_or_default();
+
+                let (session_id, out_dir) =
+                    match create_pre_mine_output_dir_with_network(Some(&args.alias), Some(network)) {
+                        Ok(values) => values,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Ok(false);
+                        },
+                    };
+                let leader_out_file = if args.fail_safe_wallet {
+                    out_dir.join(get_file_name_with_network(
+                        STEP_1_FAIL_SAFE_LEADER,
+                        Some(args.alias.clone()),
+                        Some(network),
+                    ))
+                } else {
+                    out_dir.join(get_file_name_with_network(
+                        STEP_1_LEADER,
+                        Some(args.alias.clone()),
+                        Some(network),
+                    ))
+                };
+
+                let mut outputs_for_leader = Vec::with_capacity(bridge_items.len());
+                let mut error = false;
+                for index in 0..bridge_items.len() as u64 {
+                    let key_id = KeyId::Managed {
+                        branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
+                        index,
+                    };
+                    let script_public_key = match key_manager_service.get_public_key_at_key_id(&key_id).await {
+                        Ok(key) => key,
+                        Err(e) => {
+                            eprintln!("\nError: Could not retrieve script key for output {}: {}\n", index, e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    let challenge =
+                        match get_proof_signature_challenge(args.fail_safe_wallet, index, args.multi_sig_count) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!(
+                                    "\nError: Could not create signature challenge for output {}: {}\n",
+                                    index, e
+                                );
+                                error = true;
+                                break;
+                            },
+                        };
+                    let verification_signature = match key_manager_service
+                        .sign_script_message(&key_id, challenge.as_bytes())
+                        .await
+                    {
+                        Ok(value) => value,
+                        Err(e) => {
+                            eprintln!("\nError: Could not sign script message for output {}: {}\n", index, e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    outputs_for_leader.push(CreateBridgeUtxoScriptInputsForLeader {
+                        index,
+                        script_public_key,
+                        verification_signature,
+                        network,
+                        multi_sig_count: args.multi_sig_count,
+                    });
+                    println!(" - {} of {} created", index + 1, bridge_items.len());
+                }
+                if error {
+                    return Ok(false);
+                }
+                write_to_json_file(&leader_out_file, true, outputs_for_leader)?;
+
+                let session_out_file = out_dir.join(get_file_name_with_network(STEP_1_SELF, None, Some(network)));
+                let outputs_for_self = CreateBridgeUtxoScriptInputsForSelf {
+                    account: args.account,
+                    network,
+                    multi_sig_count: args.multi_sig_count,
+                };
+                write_to_json_file(&session_out_file, true, outputs_for_self)?;
+
+                // Write all bridge_items to a comma-separated file
+                let csv_file_name = "bridge_items.csv";
+                let csv_out_file = out_dir.join(csv_file_name);
+                let mut file_stream = File::create(&csv_out_file).expect("Could not create 'bridge_items.csv'");
+                if let Err(e) = file_stream
+                    .write_all("index,value,maturity,original_maturity,fail_safe_height,beneficiary\n".as_bytes())
+                {
+                    eprintln!("\nError: Could not write pre-mine header ({})\n", e);
+                    return Ok(false);
+                }
+                for (index, item) in bridge_items.iter().enumerate() {
+                    if let Err(e) = file_stream
+                        .write_all(format!("{},{}, {}\n", index, item.value, item.destination_address).as_bytes())
+                    {
+                        eprintln!("\nError: Could not write pre-mine item ({})\n", e);
+                        return Ok(false);
+                    }
+                }
+
+                println!();
+                println!("Concluded 'step1-script-inputs'");
+                println!("Your session ID is:                 '{}'", session_id);
+                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!(
+                    "Session info saved to:              '{}'",
+                    get_file_name_with_network(STEP_1_SELF, None, Some(network))
+                );
+                println!("Pre-mine schedule saved to:         '{}'", csv_file_name);
+                println!(
+                    "Please send '{}' to leader for step 2",
+                    if args.fail_safe_wallet {
+                        get_file_name_with_network(STEP_1_FAIL_SAFE_LEADER, Some(args.alias.clone()), Some(network))
+                    } else {
+                        get_file_name_with_network(STEP_1_LEADER, Some(args.alias.clone()), Some(network))
+                    }
+                );
+                println!();
+            },
+
+            // TODO bridge multisig command
+            CreateBridgeUtxo(args) => {},
         }
     }
     if unban_peer_manager_peers {

@@ -177,6 +177,8 @@ pub enum CliCommands {
     SendMultisigEncumber(SpendEncumberAggregateUtxoArgs),
     SendMultisigSigs(SpendInputOutputSigArgs),
     SendMultisigSpendTx(SpendAggregateTransactionArgs),
+    CreateBridgeUtxoScriptInputs(CreateBridgeUtxoScriptInputsArgs),
+    CreateBridgeUtxo(CreateBridgeUtxoArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -342,6 +344,26 @@ pub struct SpendAggregateTransactionArgs {
     pub session_id: String,
     #[clap(long)]
     pub member: Vec<String>,
+}
+
+/// This step is run by each party member and generates indexed script inputs for the leader for all bridge UTXOs
+#[derive(Debug, Args, Clone)]
+pub struct CreateBridgeUtxoScriptInputsArgs {
+    #[clap(long)]
+    pub(crate) alias: String,
+    #[clap(long)]
+    pub(crate) account: u64,
+    #[clap(long)]
+    pub(crate) multi_sig_count: u8,
+    #[clap(long)]
+    pub(crate) fail_safe_wallet: bool,
+}
+
+/// This step is run by the leader and generates the bridge UTXOs
+#[derive(Debug, Args, Clone)]
+pub struct CreateBridgeUtxoArgs {
+    #[clap(long)]
+    pub(crate) party_files_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
