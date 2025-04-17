@@ -140,8 +140,8 @@ pub(crate) const SPEND_STEP_2_SELF: &str = "step_2_for_self";
 pub(crate) const SPEND_STEP_3_SELF: &str = "step_3_for_self";
 pub(crate) const SPEND_STEP_3_PARTIES: &str = "step_3_for_parties";
 pub(crate) const SPEND_STEP_4_LEADER: &str = "step_4_for_leader_from_";
-// The name of the application
-pub(crate) const CONSOLE_TITLE: &str = "Multi-party Pre-mine Generation TUI";
+
+// The multisig utxo prefixes
 pub(crate) const STEP_1_LEADER: &str = "step_1_for_leader_from_";
 pub(crate) const STEP_1_FAIL_SAFE_LEADER: &str = "step_1_for_leader_fail_safe_from_";
 pub(crate) const STEP_1_SELF: &str = "step_1_for_self";
@@ -3798,7 +3798,7 @@ pub async fn command_runner(
             },
 
             CreateMultisigUtxoParty(args) => {
-                println!("\nRunning 'step1-script-inputs' of 'Tari Pre-mine Generation' ...\n");
+                println!("\nRunning 'create-multisig-utxo-party' ...\n");
 
                 if args.alias.is_empty() || args.alias.contains(" ") {
                     eprintln!("\nError: Alias cannot contain spaces!\n");
@@ -3814,8 +3814,8 @@ pub async fn command_runner(
                 }
 
                 // TODO define bridge item
-                let mut bridge_items: Vec<BridgeItem> = vec![];
-                bridge_items.push(BridgeItem {
+                let mut multisig_items: Vec<BridgeItem> = vec![];
+                multisig_items.push(BridgeItem {
                     value: tari_core::transactions::tari_amount::MicroMinotari(1),
                     destination_address: "0x123".to_ascii_lowercase(),
                     fail_safe_height: 1000000,
@@ -3846,14 +3846,15 @@ pub async fn command_runner(
                     ))
                 };
 
-                let mut outputs_for_leader = Vec::with_capacity(bridge_items.len());
+                let mut outputs_for_leader = Vec::with_capacity(multisig_items.len());
                 let mut error = false;
-                for index in 0..bridge_items.len() as u64 {
+                for index in 0..multisig_items.len() as u64 {
                     let key_id = TariKeyId::Managed {
                         branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
                         index,
                     };
 
+                    // TODO fix? script pub key is the same which causes the error 'Duplicate script keys for index(...)'
                     let script_public_key = match key_manager_service.get_public_key_at_key_id(&key_id).await {
                         Ok(key) => key,
                         Err(e) => {
@@ -3893,7 +3894,7 @@ pub async fn command_runner(
                         network,
                         multi_sig_count: args.multi_sig_count,
                     });
-                    println!(" - {} of {} created", index + 1, bridge_items.len());
+                    println!(" - {} of {} created", index + 1, multisig_items.len());
                 }
                 if error {
                     return Ok(false);
@@ -3908,10 +3909,10 @@ pub async fn command_runner(
                 };
                 write_to_json_file(&session_out_file, true, outputs_for_self)?;
 
-                // Write all bridge_items to a comma-separated file
-                let csv_file_name = "bridge_items.csv";
+                // Write all multisig_items to a comma-separated file
+                let csv_file_name = "multisig_items.csv";
                 let csv_out_file = out_dir.join(csv_file_name);
-                let mut file_stream = File::create(&csv_out_file).expect("Could not create 'bridge_items.csv'");
+                let mut file_stream = File::create(&csv_out_file).expect("Could not create 'multisig_items.csv'");
                 if let Err(e) = file_stream
                     .write_all("index,value,maturity,original_maturity,fail_safe_height,beneficiary\n".as_bytes())
                 {
@@ -3920,7 +3921,7 @@ pub async fn command_runner(
                         "Could not write utxo-list file header".to_string(),
                     ));
                 }
-                for (index, item) in bridge_items.iter().enumerate() {
+                for (index, item) in multisig_items.iter().enumerate() {
                     if let Err(e) = file_stream
                         .write_all(format!("{},{}, {}\n", index, item.value, item.destination_address).as_bytes())
                     {
@@ -3930,16 +3931,16 @@ pub async fn command_runner(
                 }
 
                 println!();
-                println!("Concluded 'step1-script-inputs'");
+                println!("Concluded 'create-multisig-utxo-party'");
                 println!("Your session ID is:                 '{}'", session_id);
                 println!("Your session's output directory is: '{}'", out_dir.display());
                 println!(
                     "Session info saved to:              '{}'",
                     get_file_name_with_network(STEP_1_SELF, None, Some(network))
                 );
-                println!("Pre-mine schedule saved to:         '{}'", csv_file_name);
+                println!("Multisig UTXOs list saved to:         '{}'", csv_file_name);
                 println!(
-                    "Please send '{}' to leader for step 2",
+                    "Please send '{}' to leader for next step",
                     if args.fail_safe_wallet {
                         get_file_name_with_network(STEP_1_FAIL_SAFE_LEADER, Some(args.alias.clone()), Some(network))
                     } else {
@@ -3951,7 +3952,7 @@ pub async fn command_runner(
 
             // TODO bridge multisig command
             CreateMultisigUtxo(args) => {
-                println!("\nRunning CreateMultisigUtxo ...");
+                println!("\nRunning 'create-multisig-utxo' ...");
 
                 // Read inputs from party members
                 let (mut party_files, mut threshold_inputs) =
@@ -3968,17 +3969,10 @@ pub async fn command_runner(
                 let (fail_safe_file, backup_inputs) = get_fail_safe_wallet(&mut threshold_inputs, &mut party_files)
                     .map_err(|e| CommandError::MultisigUtxo(e))?;
 
-                // Get the pre-mine items according to the unlock schedule specification
-                // let bridge_items = match get_pre_mine_items(network).await {
-                //     Ok(items) => items,
-                //     Err(e) => {
-                //         eprintln!("\nError: {}\n", e);
-                //         return Ok(());
-                //     },
-                // };
+
                 // TODO define bridge item
-                let mut bridge_items: Vec<BridgeItem> = vec![];
-                bridge_items.push(BridgeItem {
+                let mut multisig_items: Vec<BridgeItem> = vec![];
+                multisig_items.push(BridgeItem {
                     value: tari_core::transactions::tari_amount::MicroMinotari(1),
                     destination_address: "0x123".to_ascii_lowercase(),
                     fail_safe_height: 1000000,
@@ -3986,13 +3980,14 @@ pub async fn command_runner(
                 });
 
                 let network = Network::get_current_or_user_setting_or_default();
+                
                 // Perform party members input verification
                 if let Err(e) = verify_script_bridge_inputs(
                     &threshold_inputs,
                     &backup_inputs,
                     &party_files,
                     &fail_safe_file,
-                    &bridge_items,
+                    &multisig_items,
                     network,
                 ) {
                     eprintln!("\nError: {}\n", e);
@@ -4013,9 +4008,9 @@ pub async fn command_runner(
                         },
                     };
 
-                // Create the pre-mine genesis block outputs and kernel
+                // Create the outputs and kernel
                 let (outputs, kernel) =
-                    match create_utxo_bridge_info(&bridge_items, &threshold_spend_keys, &backup_spend_keys).await {
+                    match create_utxo_bridge_info(&multisig_items, &threshold_spend_keys, &backup_spend_keys).await {
                         Ok(values) => values,
                         Err(e) => {
                             eprintln!("\nError: {}\n", e);
@@ -4038,7 +4033,7 @@ pub async fn command_runner(
                 let mut file_stream = match File::create(&out_file) {
                     Ok(file) => file,
                     Err(e) => {
-                        eprintln!("\nError: Could not create teh pre-mine file ({})\n", e);
+                        eprintln!("\nError: Could not create the UTXO file ({})\n", e);
                         return Err(CommandError::MultisigUtxo(
                             "get_bridge_utxo_file_name error".to_string(),
                         ));
@@ -4083,12 +4078,11 @@ pub async fn command_runner(
                 }
 
                 println!();
-                println!("Concluded 'step2-genesis-file'");
+                println!("Concluded 'create-multisig-utxo'");
                 println!("Your session ID is:                 '{}'", session_id);
                 println!("Your session's output directory is: '{}'", out_dir.display());
                 println!("Party files moved to :              '{}'", out_dir.display());
                 println!("Outputs written to:                 '{}'", file_name);
-                println!("Please send '{}' to parties for step 3", file_name);
                 println!();
             },
         }

@@ -1,19 +1,14 @@
 use std::convert::{TryFrom, TryInto};
-use std::{iter, mem::size_of, sync::Arc};
 
-use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
-use rand::{distributions::Alphanumeric, rngs::OsRng, Rng, RngCore};
+use rand::rngs::OsRng;
 use tari_common::configuration::Network;
-use tari_common_sqlite::connection::{DbConnection, DbConnectionUrl};
 use tari_common_types::types::{CompressedCommitment, CompressedPublicKey};
-use tari_common_types::wallet_types::WalletType;
+
 use tari_comms::types::Signature;
 use tari_core::transactions::transaction_key_manager::create_memory_db_key_manager_with_range_proof_size;
 use tari_crypto::compressed_key::CompressedKey;
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_crypto::signatures::CompressedSchnorrSignature;
-use tari_key_manager::cipher_seed::CipherSeed;
-use zeroize::Zeroizing;
 
 use tari_core::{
     one_sided::public_key_to_output_encryption_key,
@@ -24,16 +19,10 @@ use tari_core::{
             OutputType, RangeProofType, TransactionKernel, TransactionKernelVersion, TransactionOutput,
             TransactionOutputVersion, WalletOutputBuilder,
         },
-        transaction_key_manager::{
-            error::KeyManagerServiceError,
-            storage::{database::TransactionKeyManagerDatabase, sqlite_db::TransactionKeyManagerSqliteDatabase},
-            SecretTransactionKeyManagerInterface, TransactionKeyManagerInterface, TransactionKeyManagerWrapper,
-        },
+        transaction_key_manager::{SecretTransactionKeyManagerInterface, TransactionKeyManagerInterface},
         transaction_protocol::TransactionMetadata,
-        CryptoFactories,
     },
 };
-pub type MemoryDbKeyManager = TransactionKeyManagerWrapper<TransactionKeyManagerSqliteDatabase<DbConnection>>;
 
 use rand::{prelude::SliceRandom, thread_rng};
 use tari_common_types::{
@@ -75,33 +64,6 @@ pub struct CreateBridgeUtxoScriptInputsForSelf {
     pub multi_sig_count: u8,
 }
 
-fn random_string(len: usize) -> String {
-    iter::repeat(())
-        .map(|_| OsRng.sample(Alphanumeric) as char)
-        .take(len)
-        .collect()
-}
-
-pub fn create_memory_db_key_manager(
-    wallet_type: Arc<WalletType>,
-) -> Result<MemoryDbKeyManager, KeyManagerServiceError> {
-    let connection = DbConnection::connect_url(&DbConnectionUrl::MemoryShared(random_string(8)))?;
-    let cipher = CipherSeed::new();
-
-    let mut key = Zeroizing::new([0u8; size_of::<Key>()]);
-    OsRng.fill_bytes(key.as_mut());
-    let key_ga = Key::from_slice(key.as_ref());
-    let db_cipher = XChaCha20Poly1305::new(key_ga);
-    let factory = CryptoFactories::new(64);
-    TransactionKeyManagerWrapper::<TransactionKeyManagerSqliteDatabase<DbConnection>>::new(
-        cipher,
-        TransactionKeyManagerDatabase::new(TransactionKeyManagerSqliteDatabase::init(connection, db_cipher)),
-        factory,
-        wallet_type,
-    )
-}
-
-// TODO dupa
 /// Create pre-mine genesis block info with the given pre-mine items and party public keys
 pub async fn create_utxo_bridge_info(
     bridge_item: &[BridgeItem],
@@ -194,7 +156,7 @@ pub async fn create_utxo_bridge_info(
         &tx_meta,
     );
 
-    //TODO double check if types and arg are correct
+    //TODO check if types and args are correct
     let signature = Signature::sign_raw_uniform(&total_private_key, r, &e).unwrap();
     let compressed_signature = CompressedSchnorrSignature::new_from_schnorr(signature);
     let excess = CompressedCommitment::from_public_key(total_public_key.to_public_key().unwrap());

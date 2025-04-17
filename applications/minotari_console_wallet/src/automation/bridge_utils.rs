@@ -26,14 +26,7 @@ use super::{
     error::CommandError,
 };
 
-/// Set terminal/console title on non-Windows systems
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn set_console_title(title: &str) {
-    use std::io::{self, Write};
 
-    let mut stdout = io::stdout().lock();
-    let _unused = write!(stdout, "\x1b]0;{}\x07", title);
-}
 /// Set terminal/console title on Windows systems
 #[cfg(target_os = "windows")]
 pub(crate) fn set_console_title(title: &str) {
@@ -88,32 +81,6 @@ pub(crate) fn get_file_name_with_network(stem: &str, suffix: Option<String>, net
     file_name
 }
 
-/// Write outputs to a JSON file
-pub(crate) fn write_to_json_file<T: Serialize>(file: &Path, reset_file: bool, data: T) -> Result<(), CommandError> {
-    if let Some(file_path) = file.parent() {
-        if !file_path.exists() {
-            fs::create_dir_all(file_path).map_err(|e| CommandError::JsonFile(format!("{} ({})", e, file.display())))?;
-        }
-    }
-    if reset_file && file.exists() {
-        fs::remove_file(file).map_err(|e| CommandError::JsonFile(e.to_string()))?;
-    }
-    append_to_json_file(file, data)?;
-    Ok(())
-}
-
-fn append_to_json_file<P: AsRef<Path>, T: Serialize>(file: P, data: T) -> Result<(), CommandError> {
-    fs::create_dir_all(file.as_ref().parent().unwrap()).map_err(|e| CommandError::JsonFile(e.to_string()))?;
-    let mut file_object = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)
-        .map_err(|e| CommandError::JsonFile(e.to_string()))?;
-    let json = serde_json::to_string_pretty(&data).map_err(|e| CommandError::JsonFile(e.to_string()))?;
-    writeln!(file_object, "{json}").map_err(|e| CommandError::JsonFile(e.to_string()))?;
-    Ok(())
-}
-
 //. Instructions to read the JSON file
 #[derive(Debug)]
 pub(crate) struct PartialRead {
@@ -150,14 +117,6 @@ pub(crate) fn json_from_file_single_object<P: AsRef<Path>, T: DeserializeOwned>(
     }
 }
 
-/// Returns a random string of the given length
-pub(crate) fn random_string(len: usize) -> String {
-    iter::repeat(())
-        .map(|_| OsRng.sample(Alphanumeric) as char)
-        .take(len)
-        .collect()
-}
-
 hasher!(Blake2b<U64>, PreMineHasher, "tari.pre-min-creation", 1, pre_mine_hasher);
 
 pub(crate) fn get_proof_signature_challenge(
@@ -183,43 +142,6 @@ pub fn get_bridge_utxo_file_name() -> String {
         Network::Igor => "igor_bridg_utxo.json".to_string(),
         Network::Esmeralda => "esmeralda_bridg_utxo.json".to_string(),
     }
-}
-
-/// Read the genesis file and return transaction outputs and the kernel
-pub(crate) fn read_genesis_file(file_path: &Path) -> Result<(Vec<TransactionOutput>, TransactionKernel), CommandError> {
-    let file = File::open(file_path)
-        .map_err(|e| CommandError::PreMine(format!("Problem opening file '{}' ({})", file_path.display(), e)))?;
-    let reader = BufReader::new(file);
-
-    let mut outputs = Vec::new();
-    let mut kernel: Option<TransactionKernel> = None;
-
-    for line in reader.lines() {
-        let line = line.map_err(|e| {
-            CommandError::PreMine(format!(
-                "Problem reading line in file '{}' ({})",
-                file_path.display(),
-                e
-            ))
-        })?;
-        if let Ok(output) = serde_json::from_str::<TransactionOutput>(&line) {
-            outputs.push(output);
-        } else if let Ok(k) = serde_json::from_str::<TransactionKernel>(&line) {
-            kernel = Some(k);
-        } else {
-            eprintln!("Error: Could not deserialize line: {}", line);
-        }
-    }
-    if outputs.is_empty() {
-        return Err(CommandError::PreMine(format!(
-            "No outputs found in '{}'",
-            file_path.display()
-        )));
-    }
-    let kernel =
-        kernel.ok_or_else(|| CommandError::PreMine(format!("No kernel found in '{}'", file_path.display())))?;
-
-    Ok((outputs, kernel))
 }
 
 pub fn read_inputs_from_party_members(
