@@ -1683,277 +1683,6 @@ pub async fn command_runner(
                 println!();
             },
 
-            //TODO bridge multisig commanda
-            FinaliseMultisigUtxoSigs(args) => {
-                let session_info;
-                // Read session info
-                let mut session_id = args.session_id.clone();
-                loop {
-                    if session_id.is_empty() {
-                        eprintln!("\nError: No session id present\n");
-                        session_id = InputPrompt::<String>::new()
-                            .with_prompt("Please enter a session id to use")
-                            .interact()
-                            .unwrap();
-                        continue;
-                    }
-                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
-                        Ok(v) => session_info = v,
-                        Err(_) => {
-                            eprintln!("\nError: invalid session id\n");
-                            session_id = InputPrompt::<String>::new()
-                                .with_prompt("Please enter a session id to use")
-                                .interact()
-                                .unwrap();
-                            continue;
-                        },
-                    }
-                    break;
-                }
-                // Read leader input
-                let leader_info_indexed = read_and_verify::<PreMineSpendStep3OutputsForParties>(
-                    &session_id,
-                    &get_file_name(SPEND_STEP_3_PARTIES, None),
-                    &session_info,
-                )?;
-                // Read own party info
-                let party_info_indexed = read_and_verify::<PreMineSpendStep2OutputsForSelf>(
-                    &session_id,
-                    &get_file_name(SPEND_STEP_2_SELF, None),
-                    &session_info,
-                )?;
-
-                // Verify index consistency
-                let session_info_indexes = session_info
-                    .recipient_info
-                    .iter()
-                    .map(|v| v.output_to_be_spend)
-                    .collect::<Vec<_>>();
-                let leader_info_indexes = leader_info_indexed
-                    .outputs_for_parties
-                    .iter()
-                    .map(|v| v.output_index)
-                    .collect::<Vec<_>>();
-                let party_info_indexes = party_info_indexed
-                    .outputs_for_self
-                    .iter()
-                    .map(|v| v.output_index)
-                    .collect::<Vec<_>>();
-                if session_info_indexes != leader_info_indexes || session_info_indexes != party_info_indexes {
-                    eprintln!(
-                        "\nError: Mismatched output indexes detected! session {:?} vs. leader {:?} vs. self {:?}\n",
-                        session_info_indexes, leader_info_indexes, party_info_indexes
-                    );
-                    break;
-                }
-
-                // TODO UTXOS read_utxos_file_outputs
-                let utxos_from_file =
-                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.utxo_list_file_path) {
-                        Ok(outputs) => outputs,
-                        Err(e) => {
-                            eprintln!("\nError: {}\n", e);
-                            break;
-                        },
-                    };
-
-                println!();
-                let mut outputs_for_leader = Vec::with_capacity(party_info_indexed.outputs_for_self.len());
-                let mut error = false;
-                for (i, (leader_info, party_info)) in leader_info_indexed
-                    .outputs_for_parties
-                    .iter()
-                    .zip(party_info_indexed.outputs_for_self.iter())
-                    .enumerate()
-                {
-                    let embedded_output =
-                        match get_utxos_outputs(vec![party_info.output_index], utxos_from_file.clone()) {
-                            Ok(outputs) => outputs[0].clone(),
-                            Err(e) => {
-                                eprintln!("\nError: {}\n", e);
-                                error = true;
-                                break;
-                            },
-                        };
-
-                    // let embedded_output = match get_embedded_pre_mine_outputs(
-                    //     vec![party_info.output_index],
-                    //     pre_mine_from_file.clone(),
-                    // ) {
-                    //     Ok(outputs) => outputs[0].clone(),
-                    //     Err(e) => {
-                    //         eprintln!("\nError: {}\n", e);
-                    //         error = true;
-                    //         break;
-                    //     },
-                    // };
-
-                    // Script signature
-                    let challenge = TransactionInput::build_script_signature_challenge(
-                        &TransactionInputVersion::get_current_version(),
-                        &leader_info.script_signature_ephemeral_commitment,
-                        &leader_info.script_signature_ephemeral_pubkey,
-                        &leader_info.input_script,
-                        &leader_info.input_stack,
-                        &leader_info.total_script_key,
-                        &embedded_output.commitment,
-                    );
-
-                    let script_signature = match key_manager_service
-                        .sign_with_nonce_and_challenge(
-                            &party_info.pre_mine_script_key_id,
-                            &party_info.script_nonce_key_id,
-                            &challenge,
-                        )
-                        .await
-                    {
-                        Ok(signature) => signature,
-                        Err(e) => {
-                            eprintln!("\nError: Script signature SignMessage error! {}\n", e);
-                            error = true;
-                            break;
-                        },
-                    };
-
-                    // lets verify the script
-                    let shared_secret = match DiffieHellmanSharedSecret::<UncompressedPublicKey>::from_canonical_bytes(
-                        leader_info.shared_secret.as_bytes(),
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("\nError: Could not create shared secret from canonical bytes! {}\n", e);
-                            error = true;
-                            break;
-                        },
-                    };
-
-                    let encryption_key = shared_secret_to_output_encryption_key(&shared_secret)?;
-                    let (committed_value, commitment_mask_private_key, _payment_id) = match EncryptedData::decrypt_data(
-                        &encryption_key,
-                        &leader_info.output_commitment,
-                        &leader_info.encrypted_data,
-                    ) {
-                        Ok((value, mask, id)) => (value, mask, id),
-                        Err(e) => {
-                            eprintln!("\nError: Could not decrypt data! {}\n", e);
-                            error = true;
-                            break;
-                        },
-                    };
-                    let commitment_mask_key_id = &key_manager_service
-                        .import_key(commitment_mask_private_key.clone())
-                        .await?;
-                    match key_manager_service
-                        .verify_mask(
-                            &leader_info.output_commitment,
-                            commitment_mask_key_id,
-                            committed_value.as_u64(),
-                        )
-                        .await
-                    {
-                        Ok(_) => {},
-                        Err(e) => {
-                            eprintln!("\nError: Could not verify mask! {}\n", e);
-                            error = true;
-                            break;
-                        },
-                    }
-                    // now lets calculate the script with stealth key
-                    let script_spending_key = key_manager_service
-                        .stealth_address_script_spending_key(
-                            commitment_mask_key_id,
-                            party_info.recipient_address.public_spend_key(),
-                        )
-                        .await?;
-                    let script = push_pubkey_script(&script_spending_key);
-
-                    // Metadata signature
-                    let script_offset = key_manager_service
-                        .get_script_offset(
-                            &vec![party_info.pre_mine_script_key_id.clone()],
-                            &vec![party_info.sender_offset_key_id.clone()],
-                        )
-                        .await?;
-                    let challenge = TransactionOutput::build_metadata_signature_challenge(
-                        &TransactionOutputVersion::get_current_version(),
-                        &script,
-                        &leader_info.output_features,
-                        &leader_info.sender_offset_pubkey,
-                        &leader_info.metadata_signature_ephemeral_commitment,
-                        &leader_info.metadata_signature_ephemeral_pubkey,
-                        &leader_info.output_commitment,
-                        &Covenant::default(),
-                        &leader_info.encrypted_data,
-                        MicroMinotari::zero(),
-                    );
-
-                    let metadata_signature = match key_manager_service
-                        .sign_with_nonce_and_challenge(
-                            &party_info.sender_offset_key_id,
-                            &party_info.sender_offset_nonce_key_id,
-                            &challenge,
-                        )
-                        .await
-                    {
-                        Ok(signature) => signature,
-                        Err(e) => {
-                            eprintln!("\nError: Metadata signature SignMessage error! {}\n", e);
-                            error = true;
-                            break;
-                        },
-                    };
-
-                    if script_signature.get_signature() == Signature::default().get_signature()
-                        || metadata_signature.get_signature() == Signature::default().get_signature()
-                    {
-                        eprintln!(
-                            "\nError: Script and/or metadata signatures not created (index {})!\n",
-                            party_info.output_index
-                        );
-                        error = true;
-                        break;
-                    }
-
-                    outputs_for_leader.push(Step4OutputsForLeader {
-                        output_index: party_info.output_index,
-                        script_signature,
-                        metadata_signature,
-                        script_offset,
-                    });
-
-                    println!(
-                        "  Processed {} of {} transactions",
-                        i + 1,
-                        leader_info_indexed.outputs_for_parties.len()
-                    );
-                }
-                if error {
-                    break;
-                }
-
-                let out_dir = out_dir(&session_id)?;
-                let out_file = out_dir.join(get_file_name(
-                    SPEND_STEP_4_LEADER,
-                    Some(party_info_indexed.alias.clone()),
-                ));
-                write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
-                write_json_object_to_file_as_line(
-                    &out_file,
-                    false,
-                    PreMineSpendStep4OutputsForLeader {
-                        outputs_for_leader,
-                        alias: party_info_indexed.alias.clone(),
-                    },
-                )?;
-
-                println!();
-                println!("Concluded step 4 'send-multisig-spend-input-output-sigs'");
-                println!(
-                    "Send '{}' to leader for step 5",
-                    get_file_name(SPEND_STEP_4_LEADER, Some(party_info_indexed.alias))
-                );
-                println!();
-            },
             PreMineSpendTx(args) => {
                 temp_ban_peers(&wallet, &mut peer_list).await;
                 unban_peer_manager_peers = true;
@@ -2299,351 +2028,6 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig command
-            FinaliseMultisigUtxoSpendTx(args) => {
-                temp_ban_peers(&wallet, &mut peer_list).await;
-                unban_peer_manager_peers = true;
-
-                // Read session info
-
-                let session_info;
-                let mut session_id = args.session_id.clone();
-                loop {
-                    if session_id.is_empty() {
-                        eprintln!("\nError: No session id present\n");
-                        session_id = InputPrompt::<String>::new()
-                            .with_prompt("Please enter a session id to use")
-                            .interact()
-                            .unwrap();
-                        continue;
-                    }
-                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
-                        Ok(v) => session_info = v,
-                        Err(_) => {
-                            eprintln!("\nError: invalid session id\n");
-                            session_id = InputPrompt::<String>::new()
-                                .with_prompt("Please enter a session id to use")
-                                .interact()
-                                .unwrap();
-                            continue;
-                        },
-                    }
-                    break;
-                }
-
-                // Read other parties info
-                let mut party_info = Vec::with_capacity(args.member.len());
-                for name in args.member {
-                    let file_name = get_file_name(SPEND_STEP_4_LEADER, Some(name.clone()));
-                    party_info.push(read_and_verify::<PreMineSpendStep4OutputsForLeader>(
-                        &args.session_id,
-                        &file_name,
-                        &session_info,
-                    )?);
-                }
-                // Read own party info
-                let leader_info = read_and_verify::<PreMineSpendStep3OutputsForSelf>(
-                    &args.session_id,
-                    &get_file_name(SPEND_STEP_3_SELF, None),
-                    &session_info,
-                )?;
-
-                // Verify index consistency
-                let session_info_indexes = session_info
-                    .recipient_info
-                    .iter()
-                    .map(|v| v.output_to_be_spend)
-                    .collect::<Vec<_>>();
-                let leader_info_indexes = leader_info
-                    .outputs_for_self
-                    .iter()
-                    .map(|v| v.output_index)
-                    .collect::<Vec<_>>();
-                if session_info_indexes != leader_info_indexes {
-                    eprintln!(
-                        "\nError: Mismatched output indexes detected! session {:?} vs. leader (self) {:?}\n",
-                        session_info_indexes, leader_info_indexes
-                    );
-                    break;
-                }
-                let mut error = false;
-                for party in &party_info {
-                    let party_info_indexes = party
-                        .outputs_for_leader
-                        .iter()
-                        .map(|v| v.output_index)
-                        .collect::<Vec<_>>();
-                    if session_info_indexes != party_info_indexes {
-                        eprintln!(
-                            "\nError: Mismatched output indexes from '{}' detected! session {:?} vs. party {:?}\n",
-                            party.alias, session_info_indexes, party_info_indexes
-                        );
-                        error = true;
-                        break;
-                    }
-                }
-                if error {
-                    break;
-                }
-
-                // Flatten and transpose party_info to be indexed by output index
-                let party_info_flattened = party_info
-                    .iter()
-                    .map(|v1| v1.outputs_for_leader.clone())
-                    .collect::<Vec<_>>();
-                let mut party_info_per_index = Vec::with_capacity(party_info_flattened[0].len());
-                let number_of_parties = party_info_flattened.len();
-                for i in 0..party_info_flattened[0].len() {
-                    let mut outputs_per_index = Vec::with_capacity(number_of_parties);
-                    for outputs in &party_info_flattened {
-                        outputs_per_index.push(outputs[i].clone());
-                    }
-                    party_info_per_index.push(outputs_per_index);
-                }
-
-                // Create finalized spend transactions
-                let mut inputs = Vec::new();
-                let mut outputs = Vec::new();
-                let mut kernels = Vec::new();
-                let mut kernel_offset = PrivateKey::default();
-                for (i, (indexed_info, leader_self)) in party_info_per_index
-                    .iter()
-                    .zip(leader_info.outputs_for_self.iter())
-                    .enumerate()
-                {
-                    let mut metadata_signatures = Vec::with_capacity(party_info_per_index.len());
-                    let mut script_signatures = Vec::with_capacity(party_info_per_index.len());
-                    let mut offset = PrivateKey::default();
-                    for party_info in indexed_info {
-                        metadata_signatures.push(party_info.metadata_signature.clone());
-                        script_signatures.push(party_info.script_signature.clone());
-                        offset = &offset + &party_info.script_offset;
-                    }
-
-                    if let Err(e) = finalise_aggregate_utxo(
-                        transaction_service.clone(),
-                        leader_self.tx_id.as_u64(),
-                        metadata_signatures,
-                        script_signatures,
-                        offset,
-                    )
-                    .await
-                    {
-                        eprintln!(
-                            "\nError: Error completing transaction '{}'! ({})\n",
-                            leader_self.tx_id, e
-                        );
-                        error = true;
-                        break;
-                    }
-
-                    // Collect all inputs, outputs and kernels that should go into the genesis block
-                    println!();
-                    if session_info.use_pre_mine_input_file {
-                        match transaction_service.get_any_transaction(leader_self.tx_id).await {
-                            Ok(Some(WalletTransaction::Completed(tx))) => {
-                                // Fees must be zero
-                                match tx.transaction.body.get_total_fee() {
-                                    Ok(fee) => {
-                                        if fee != MicroMinotari::zero() {
-                                            eprintln!(
-                                                "\nError: Transaction {} fee ({}) for does not equal zero!\n",
-                                                tx.tx_id, fee
-                                            );
-                                            error = true;
-                                            break;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        eprintln!("\nError: Transaction {}! ({})\n", tx.tx_id, e);
-                                        error = true;
-                                        break;
-                                    },
-                                }
-
-                                let mut utxo_sum = UncompressedCommitment::default();
-                                for output in tx.transaction.body.outputs() {
-                                    outputs.push(output.clone());
-                                    utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
-                                }
-                                for input in tx.transaction.body.inputs() {
-                                    inputs.push(input.clone());
-                                    match input.commitment() {
-                                        Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
-                                        Err(e) => {
-                                            eprintln!("\nError: Input commitment ({})!\n", e);
-                                            error = true;
-                                            break;
-                                        },
-                                    }
-                                }
-                                if error {
-                                    break;
-                                }
-                                let mut kernel_sum = UncompressedCommitment::default();
-                                for kernel in tx.transaction.body.kernels() {
-                                    kernels.push(kernel.clone());
-                                    kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
-                                }
-                                kernel_offset = &kernel_offset + &tx.transaction.offset;
-                                // Ensure that the balance equation holds:
-                                //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) +
-                                // total_offset
-                                let offset = CryptoFactories::default()
-                                    .commitment
-                                    .commit_value(&tx.transaction.offset, 0);
-                                if utxo_sum != &kernel_sum + &offset {
-                                    eprintln!(
-                                        "\nError: Transaction {} balance: UTXO sum {} vs. kernel sum + offset {}!\n",
-                                        tx.tx_id,
-                                        utxo_sum.to_hex(),
-                                        (&kernel_sum + &offset).to_hex()
-                                    );
-                                    error = true;
-                                    break;
-                                }
-                            },
-                            Ok(_) => {
-                                eprintln!(
-                                    "\nError: Transaction '{}' is not in a completed state!\n",
-                                    leader_self.tx_id
-                                );
-                                break;
-                            },
-                            Err(e) => {
-                                eprintln!("\nError: Transaction '{}' not found! ({})\n", leader_self.tx_id, e);
-                                break;
-                            },
-                        }
-                    }
-
-                    println!("  Processed {} of {}", i + 1, party_info_per_index.len());
-                }
-                if error {
-                    break;
-                }
-
-                let file_name = "multisig_addition.json".to_string(); //TODO file name?
-                let out_dir_path = out_dir(&args.session_id)?;
-                let out_file = out_dir_path.join(&file_name);
-                if session_info.use_pre_mine_input_file {
-                    // Ensure that the balance equation holds:
-                    //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) + kernel_offset
-                    let mut utxo_sum = UncompressedCommitment::default();
-                    for output in &outputs {
-                        utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
-                    }
-                    for input in &inputs {
-                        match input.commitment() {
-                            Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
-                            Err(e) => {
-                                eprintln!("\nError: Input commitment ({})!\n", e);
-                                break;
-                            },
-                        }
-                    }
-                    let mut kernel_sum = UncompressedCommitment::default();
-                    for kernel in &kernels {
-                        kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
-                    }
-                    let offset = CryptoFactories::default().commitment.commit_value(&kernel_offset, 0);
-                    if utxo_sum != &kernel_sum + &offset {
-                        eprintln!(
-                            "\nError: Transactions balance: UTXO sum {} vs. kernel sum + offset {}!\n",
-                            utxo_sum.to_hex(),
-                            (&kernel_sum + &offset).to_hex()
-                        );
-                    }
-
-                    let mut file_stream = match File::create(&out_file) {
-                        Ok(file) => file,
-                        Err(e) => {
-                            eprintln!("\nError: Could not create the pre-mine file ({})\n", e);
-                            break;
-                        },
-                    };
-
-                    let mut error = false;
-                    inputs.sort();
-                    for input in &inputs {
-                        let input_s = match serde_json::to_string(&input) {
-                            Ok(val) => val,
-                            Err(e) => {
-                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
-                                error = true;
-                                break;
-                            },
-                        };
-                        if let Err(e) = file_stream.write_all(format!("{}\n", input_s).as_bytes()) {
-                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
-                            error = true;
-                            break;
-                        }
-                    }
-                    if error {
-                        break;
-                    }
-                    outputs.sort();
-                    for output in &outputs {
-                        let utxo_s = match serde_json::to_string(&output) {
-                            Ok(val) => val,
-                            Err(e) => {
-                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
-                                error = true;
-                                break;
-                            },
-                        };
-                        if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
-                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
-                            error = true;
-                            break;
-                        }
-                    }
-                    if error {
-                        break;
-                    }
-                    kernels.sort();
-                    for kernel in &kernels {
-                        let kernel_s = match serde_json::to_string(&kernel) {
-                            Ok(val) => val,
-                            Err(e) => {
-                                eprintln!("\nError: Could not serialize kernel ({})\n", e);
-                                break;
-                            },
-                        };
-                        if let Err(e) = file_stream.write_all(format!("{}\n", kernel_s).as_bytes()) {
-                            eprintln!("\nError: Could not write the genesis file ({})\n", e);
-                            error = true;
-                            break;
-                        }
-                    }
-                    if error {
-                        break;
-                    }
-                    let kernel_offset_s = match serde_json::to_string(&kernel_offset) {
-                        Ok(val) => val,
-                        Err(e) => {
-                            eprintln!("\nError: Could not serialize kernel offset ({})\n", e);
-                            break;
-                        },
-                    };
-                    if let Err(e) = file_stream.write_all(format!("{}\n", kernel_offset_s).as_bytes()) {
-                        eprintln!("\nError: Could not write the genesis file ({})\n", e);
-                        break;
-                    }
-                }
-
-                println!();
-                if session_info.use_pre_mine_input_file {
-                    println!(
-                        "Genesis block immediate send-multisig spend information: '{}' in '{}'",
-                        file_name,
-                        out_dir_path.display()
-                    );
-                }
-                println!("Concluded step 5 'send-multisig-spend-aggregate-transaction'");
-                println!();
-            },
             SendMinotari(args) => {
                 match send_tari(
                     transaction_service.clone(),
@@ -2964,7 +2348,6 @@ pub async fn command_runner(
                 },
                 Err(e) => eprintln!("FinaliseShaAtomicSwap error! {}", e),
             },
-
             RevalidateWalletDb => {
                 if let Err(e) = output_service
                     .revalidate_all_outputs()
@@ -3323,7 +2706,296 @@ pub async fn command_runner(
                 fs::remove_dir_all(temp_path)?;
             },
 
-            // TODO bridge multisig command
+            // TODO bridge multisig command init step 1 - Party
+            CreateMultisigUtxoParty(args) => {
+                println!("\nRunning 'create-multisig-utxo-party' ...\n");
+
+                if args.alias.is_empty() || args.alias.contains(" ") {
+                    eprintln!("\nError: Alias cannot contain spaces!\n");
+                    return Err(CommandError::InvalidArgument(
+                        "Alias cannot contain spaces!".to_string(),
+                    ));
+                }
+                if args.alias.chars().any(|c| !c.is_alphanumeric() && c != '_') {
+                    eprintln!("\nError: Alias contains invalid characters! Only alphanumeric and '_' are allowed.\n");
+                    return Err(CommandError::InvalidArgument(
+                        "Alias contains invalid characters! Only alphanumeric and '_' are allowed.".to_string(),
+                    ));
+                }
+
+                // TODO define bridge item
+                let mut multisig_items: Vec<BridgeItem> = vec![];
+                multisig_items.push(BridgeItem {
+                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
+                    destination_address: "0x123".to_ascii_lowercase(),
+                    fail_safe_height: 1000000,
+                    maturity: 100,
+                });
+
+                let network = Network::get_current_or_user_setting_or_default();
+
+                let (session_id, out_dir) =
+                    match create_pre_mine_output_dir_with_network(Some(&args.alias), Some(network)) {
+                        Ok(values) => values,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Ok(false);
+                        },
+                    };
+                let leader_out_file = if args.fail_safe_wallet {
+                    out_dir.join(get_file_name_with_network(
+                        STEP_1_FAIL_SAFE_LEADER,
+                        Some(args.alias.clone()),
+                        Some(network),
+                    ))
+                } else {
+                    out_dir.join(get_file_name_with_network(
+                        STEP_1_LEADER,
+                        Some(args.alias.clone()),
+                        Some(network),
+                    ))
+                };
+
+                let mut outputs_for_leader = Vec::with_capacity(multisig_items.len());
+                let mut error = false;
+                for index in 0..multisig_items.len() as u64 {
+                    let key_id = TariKeyId::Managed {
+                        branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
+                        index,
+                    };
+
+                    // TODO fix? script pub key is the same which causes the error 'Duplicate script keys for index(...)'
+                    let script_public_key = match key_manager_service.get_public_key_at_key_id(&key_id).await {
+                        Ok(key) => key,
+                        Err(e) => {
+                            eprintln!("\nError: Could not retrieve script key for output {}: {}\n", index, e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    let challenge =
+                        match get_proof_signature_challenge(args.fail_safe_wallet, index, args.multi_sig_count) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!(
+                                    "\nError: Could not create signature challenge for output {}: {}\n",
+                                    index, e
+                                );
+                                error = true;
+                                break;
+                            },
+                        };
+                    let verification_signature = match key_manager_service
+                        .sign_script_message(&key_id, challenge.as_bytes())
+                        .await
+                    {
+                        Ok(value) => value,
+                        Err(e) => {
+                            eprintln!("\nError: Could not sign script message for output {}: {}\n", index, e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    outputs_for_leader.push(CreateBridgeUtxoScriptInputsForLeader {
+                        index,
+                        script_public_key: script_public_key.to_public_key().unwrap(),
+                        verification_signature: verification_signature.to_schnorr_signature().unwrap(),
+                        network,
+                        multi_sig_count: args.multi_sig_count,
+                    });
+                    println!(" - {} of {} created", index + 1, multisig_items.len());
+                }
+                if error {
+                    return Ok(false);
+                }
+                write_to_json_file(&leader_out_file, true, outputs_for_leader)?;
+
+                let session_out_file = out_dir.join(get_file_name_with_network(STEP_1_SELF, None, Some(network)));
+                let outputs_for_self = CreateBridgeUtxoScriptInputsForSelf {
+                    account: args.account,
+                    network,
+                    multi_sig_count: args.multi_sig_count,
+                };
+                write_to_json_file(&session_out_file, true, outputs_for_self)?;
+
+                // Write all multisig_items to a comma-separated file
+                let csv_file_name = "multisig_items.csv";
+                let csv_out_file = out_dir.join(csv_file_name);
+                let mut file_stream = File::create(&csv_out_file).expect("Could not create 'multisig_items.csv'");
+                if let Err(e) = file_stream
+                    .write_all("index,value,maturity,original_maturity,fail_safe_height,beneficiary\n".as_bytes())
+                {
+                    eprintln!("\nError: Could not write file header ({})\n", e);
+                    return Err(CommandError::MultisigUtxo(
+                        "Could not write utxo-list file header".to_string(),
+                    ));
+                }
+                for (index, item) in multisig_items.iter().enumerate() {
+                    if let Err(e) = file_stream
+                        .write_all(format!("{},{}, {}\n", index, item.value, item.destination_address).as_bytes())
+                    {
+                        eprintln!("\nError: Could not write item ({})\n", e);
+                        return Err(CommandError::MultisigUtxo("Could not write utxo-list item".to_string()));
+                    }
+                }
+
+                println!();
+                println!("Concluded 'create-multisig-utxo-party'");
+                println!("Your session ID is:                 '{}'", session_id);
+                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!(
+                    "Session info saved to:              '{}'",
+                    get_file_name_with_network(STEP_1_SELF, None, Some(network))
+                );
+                println!("Multisig UTXOs list saved to:         '{}'", csv_file_name);
+                println!(
+                    "Please send '{}' to leader for next step",
+                    if args.fail_safe_wallet {
+                        get_file_name_with_network(STEP_1_FAIL_SAFE_LEADER, Some(args.alias.clone()), Some(network))
+                    } else {
+                        get_file_name_with_network(STEP_1_LEADER, Some(args.alias.clone()), Some(network))
+                    }
+                );
+                println!();
+            },
+
+            // TODO bridge multisig command init step 2 - Leader
+            CreateMultisigUtxo(args) => {
+                println!("\nRunning 'create-multisig-utxo' ...");
+
+                // Read inputs from party members
+                let (mut party_files, mut threshold_inputs) =
+                    match read_inputs_from_party_members(&args.party_files_path) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo(
+                                "read_inputs_from_party_members error".to_string(),
+                            ));
+                        },
+                    };
+
+                let (fail_safe_file, backup_inputs) = get_fail_safe_wallet(&mut threshold_inputs, &mut party_files)
+                    .map_err(|e| CommandError::MultisigUtxo(e))?;
+
+                // TODO define bridge item
+                let mut multisig_items: Vec<BridgeItem> = vec![];
+                multisig_items.push(BridgeItem {
+                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
+                    destination_address: "0x123".to_ascii_lowercase(),
+                    fail_safe_height: 1000000,
+                    maturity: 100,
+                });
+
+                let network = Network::get_current_or_user_setting_or_default();
+
+                // Perform party members input verification
+                if let Err(e) = verify_script_bridge_inputs(
+                    &threshold_inputs,
+                    &backup_inputs,
+                    &party_files,
+                    &fail_safe_file,
+                    &multisig_items,
+                    network,
+                ) {
+                    eprintln!("\nError: {}\n", e);
+                    return Err(CommandError::MultisigUtxo(
+                        "verify_script_bridge_inputs error".to_string(),
+                    ));
+                }
+
+                // Extract the threshold and backup spend keys
+                let (threshold_spend_keys, backup_spend_keys, _all_spend_keys) =
+                    match extract_threshold_and_backup_spend_keys(&threshold_inputs, &backup_inputs) {
+                        Ok(keys) => keys,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo(
+                                "verify_script_bridge_inputs error".to_string(),
+                            ));
+                        },
+                    };
+
+                // Create the outputs and kernel
+                let (outputs, kernel) =
+                    match create_utxo_bridge_info(&multisig_items, &threshold_spend_keys, &backup_spend_keys).await {
+                        Ok(values) => values,
+                        Err(e) => {
+                            eprintln!("\nError: {}\n", e);
+                            return Err(CommandError::MultisigUtxo("create_utxo_bridge_info error".to_string()));
+                        },
+                    };
+
+                // Create the genesis file
+                let (session_id, out_dir) = match create_multisig_utxo_output_dir(Some("leader"), Some(network)) {
+                    Ok(values) => values,
+                    Err(e) => {
+                        eprintln!("\nError: {}\n", e);
+                        return Err(CommandError::MultisigUtxo(
+                            "create_pre_mine_output_dir error".to_string(),
+                        ));
+                    },
+                };
+                let file_name = get_bridge_utxo_file_name();
+                let out_file = out_dir.join(&file_name);
+                let mut file_stream = match File::create(&out_file) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        eprintln!("\nError: Could not create the UTXO file ({})\n", e);
+                        return Err(CommandError::MultisigUtxo(
+                            "get_bridge_utxo_file_name error".to_string(),
+                        ));
+                    },
+                };
+
+                let mut error = false;
+                for output in outputs {
+                    let utxo_s = match serde_json::to_string(&output) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
+                        eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                        error = true;
+                        break;
+                    }
+                }
+                if error {
+                    return Err(CommandError::MultisigUtxo("error".to_string()));
+                }
+                let kernel = match serde_json::to_string(&kernel) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        eprintln!("\nError: Could not serialize kernel ({})\n", e);
+                        return Err(CommandError::MultisigUtxo("error".to_string()));
+                    },
+                };
+                if let Err(e) = file_stream.write_all(format!("{}\n", kernel).as_bytes()) {
+                    eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                    return Err(CommandError::MultisigUtxo("error".to_string()));
+                }
+
+                for file in party_files.iter().chain(once(&fail_safe_file)) {
+                    let out_file = out_dir.join(file.file_name().expect("Path exists"));
+                    let _res = fs::copy(file.clone(), out_file.clone());
+                    let _res = fs::remove_file(file.clone());
+                }
+
+                println!();
+                println!("Concluded 'create-multisig-utxo'");
+                println!("Your session ID is:                 '{}'", session_id);
+                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!("Party files moved to :              '{}'", out_dir.display());
+                println!("Outputs written to:                 '{}'", file_name);
+                println!();
+            },
+
+            // TODO bridge multisig command finalise step 1 - Ledaer
             FinaliseMultisigUtxoStart(args) => {
                 let args_recipient_info = sort_args_recipient_info(args.recipient_info);
                 if let Err(e) = verify_no_duplicate_indexes(&args_recipient_info) {
@@ -3369,7 +3041,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig command
+            // TODO bridge multisig command finalise step 2 - Party
             FinaliseMultisigUtxoStartParty(args) => {
                 let mut alias = args.alias.clone();
                 loop {
@@ -3546,7 +3218,7 @@ pub async fn command_runner(
                 println!();
             },
 
-            // TODO bridge multisig command
+            // TODO bridge multisig command finalise step 3 - Leader
             FinaliseMultisigUtxoEncumber(args) => {
                 let session_info;
                 // Read session info
@@ -3797,292 +3469,609 @@ pub async fn command_runner(
                 println!();
             },
 
-            CreateMultisigUtxoParty(args) => {
-                println!("\nRunning 'create-multisig-utxo-party' ...\n");
-
-                if args.alias.is_empty() || args.alias.contains(" ") {
-                    eprintln!("\nError: Alias cannot contain spaces!\n");
-                    return Err(CommandError::InvalidArgument(
-                        "Alias cannot contain spaces!".to_string(),
-                    ));
+            // TODO bridge multisig command finalise step 4 - Party
+            FinaliseMultisigUtxoSigs(args) => {
+                let session_info;
+                // Read session info
+                let mut session_id = args.session_id.clone();
+                loop {
+                    if session_id.is_empty() {
+                        eprintln!("\nError: No session id present\n");
+                        session_id = InputPrompt::<String>::new()
+                            .with_prompt("Please enter a session id to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
+                        Ok(v) => session_info = v,
+                        Err(_) => {
+                            eprintln!("\nError: invalid session id\n");
+                            session_id = InputPrompt::<String>::new()
+                                .with_prompt("Please enter a session id to use")
+                                .interact()
+                                .unwrap();
+                            continue;
+                        },
+                    }
+                    break;
                 }
-                if args.alias.chars().any(|c| !c.is_alphanumeric() && c != '_') {
-                    eprintln!("\nError: Alias contains invalid characters! Only alphanumeric and '_' are allowed.\n");
-                    return Err(CommandError::InvalidArgument(
-                        "Alias contains invalid characters! Only alphanumeric and '_' are allowed.".to_string(),
-                    ));
+                // Read leader input
+                let leader_info_indexed = read_and_verify::<PreMineSpendStep3OutputsForParties>(
+                    &session_id,
+                    &get_file_name(SPEND_STEP_3_PARTIES, None),
+                    &session_info,
+                )?;
+                // Read own party info
+                let party_info_indexed = read_and_verify::<PreMineSpendStep2OutputsForSelf>(
+                    &session_id,
+                    &get_file_name(SPEND_STEP_2_SELF, None),
+                    &session_info,
+                )?;
+
+                // Verify index consistency
+                let session_info_indexes = session_info
+                    .recipient_info
+                    .iter()
+                    .map(|v| v.output_to_be_spend)
+                    .collect::<Vec<_>>();
+                let leader_info_indexes = leader_info_indexed
+                    .outputs_for_parties
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                let party_info_indexes = party_info_indexed
+                    .outputs_for_self
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                if session_info_indexes != leader_info_indexes || session_info_indexes != party_info_indexes {
+                    eprintln!(
+                        "\nError: Mismatched output indexes detected! session {:?} vs. leader {:?} vs. self {:?}\n",
+                        session_info_indexes, leader_info_indexes, party_info_indexes
+                    );
+                    break;
                 }
 
-                // TODO define bridge item
-                let mut multisig_items: Vec<BridgeItem> = vec![];
-                multisig_items.push(BridgeItem {
-                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
-                    destination_address: "0x123".to_ascii_lowercase(),
-                    fail_safe_height: 1000000,
-                    maturity: 100,
-                });
-
-                let network = Network::get_current_or_user_setting_or_default();
-
-                let (session_id, out_dir) =
-                    match create_pre_mine_output_dir_with_network(Some(&args.alias), Some(network)) {
-                        Ok(values) => values,
+                // TODO UTXOS read_utxos_file_outputs
+                let utxos_from_file =
+                    match read_utxos_file_outputs(session_info.use_pre_mine_input_file, args.utxo_list_file_path) {
+                        Ok(outputs) => outputs,
                         Err(e) => {
                             eprintln!("\nError: {}\n", e);
-                            return Ok(false);
-                        },
-                    };
-                let leader_out_file = if args.fail_safe_wallet {
-                    out_dir.join(get_file_name_with_network(
-                        STEP_1_FAIL_SAFE_LEADER,
-                        Some(args.alias.clone()),
-                        Some(network),
-                    ))
-                } else {
-                    out_dir.join(get_file_name_with_network(
-                        STEP_1_LEADER,
-                        Some(args.alias.clone()),
-                        Some(network),
-                    ))
-                };
-
-                let mut outputs_for_leader = Vec::with_capacity(multisig_items.len());
-                let mut error = false;
-                for index in 0..multisig_items.len() as u64 {
-                    let key_id = TariKeyId::Managed {
-                        branch: TransactionKeyManagerBranch::PreMine.get_branch_key(),
-                        index,
-                    };
-
-                    // TODO fix? script pub key is the same which causes the error 'Duplicate script keys for index(...)'
-                    let script_public_key = match key_manager_service.get_public_key_at_key_id(&key_id).await {
-                        Ok(key) => key,
-                        Err(e) => {
-                            eprintln!("\nError: Could not retrieve script key for output {}: {}\n", index, e);
-                            error = true;
                             break;
                         },
                     };
-                    let challenge =
-                        match get_proof_signature_challenge(args.fail_safe_wallet, index, args.multi_sig_count) {
-                            Ok(val) => val,
+
+                println!();
+                let mut outputs_for_leader = Vec::with_capacity(party_info_indexed.outputs_for_self.len());
+                let mut error = false;
+                for (i, (leader_info, party_info)) in leader_info_indexed
+                    .outputs_for_parties
+                    .iter()
+                    .zip(party_info_indexed.outputs_for_self.iter())
+                    .enumerate()
+                {
+                    let embedded_output =
+                        match get_utxos_outputs(vec![party_info.output_index], utxos_from_file.clone()) {
+                            Ok(outputs) => outputs[0].clone(),
                             Err(e) => {
-                                eprintln!(
-                                    "\nError: Could not create signature challenge for output {}: {}\n",
-                                    index, e
-                                );
+                                eprintln!("\nError: {}\n", e);
                                 error = true;
                                 break;
                             },
                         };
-                    let verification_signature = match key_manager_service
-                        .sign_script_message(&key_id, challenge.as_bytes())
+
+                    // Script signature
+                    let challenge = TransactionInput::build_script_signature_challenge(
+                        &TransactionInputVersion::get_current_version(),
+                        &leader_info.script_signature_ephemeral_commitment,
+                        &leader_info.script_signature_ephemeral_pubkey,
+                        &leader_info.input_script,
+                        &leader_info.input_stack,
+                        &leader_info.total_script_key,
+                        &embedded_output.commitment,
+                    );
+
+                    let script_signature = match key_manager_service
+                        .sign_with_nonce_and_challenge(
+                            &party_info.pre_mine_script_key_id,
+                            &party_info.script_nonce_key_id,
+                            &challenge,
+                        )
                         .await
                     {
-                        Ok(value) => value,
+                        Ok(signature) => signature,
                         Err(e) => {
-                            eprintln!("\nError: Could not sign script message for output {}: {}\n", index, e);
+                            eprintln!("\nError: Script signature SignMessage error! {}\n", e);
                             error = true;
                             break;
                         },
                     };
 
-                    outputs_for_leader.push(CreateBridgeUtxoScriptInputsForLeader {
-                        index,
-                        script_public_key: script_public_key.to_public_key().unwrap(),
-                        verification_signature: verification_signature.to_schnorr_signature().unwrap(),
-                        network,
-                        multi_sig_count: args.multi_sig_count,
+                    // lets verify the script
+                    let shared_secret = match DiffieHellmanSharedSecret::<UncompressedPublicKey>::from_canonical_bytes(
+                        leader_info.shared_secret.as_bytes(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("\nError: Could not create shared secret from canonical bytes! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    let encryption_key = shared_secret_to_output_encryption_key(&shared_secret)?;
+                    let (committed_value, commitment_mask_private_key, _payment_id) = match EncryptedData::decrypt_data(
+                        &encryption_key,
+                        &leader_info.output_commitment,
+                        &leader_info.encrypted_data,
+                    ) {
+                        Ok((value, mask, id)) => (value, mask, id),
+                        Err(e) => {
+                            eprintln!("\nError: Could not decrypt data! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+                    let commitment_mask_key_id = &key_manager_service
+                        .import_key(commitment_mask_private_key.clone())
+                        .await?;
+                    match key_manager_service
+                        .verify_mask(
+                            &leader_info.output_commitment,
+                            commitment_mask_key_id,
+                            committed_value.as_u64(),
+                        )
+                        .await
+                    {
+                        Ok(_) => {},
+                        Err(e) => {
+                            eprintln!("\nError: Could not verify mask! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    }
+                    // now lets calculate the script with stealth key
+                    let script_spending_key = key_manager_service
+                        .stealth_address_script_spending_key(
+                            commitment_mask_key_id,
+                            party_info.recipient_address.public_spend_key(),
+                        )
+                        .await?;
+                    let script = push_pubkey_script(&script_spending_key);
+
+                    // Metadata signature
+                    let script_offset = key_manager_service
+                        .get_script_offset(
+                            &vec![party_info.pre_mine_script_key_id.clone()],
+                            &vec![party_info.sender_offset_key_id.clone()],
+                        )
+                        .await?;
+                    let challenge = TransactionOutput::build_metadata_signature_challenge(
+                        &TransactionOutputVersion::get_current_version(),
+                        &script,
+                        &leader_info.output_features,
+                        &leader_info.sender_offset_pubkey,
+                        &leader_info.metadata_signature_ephemeral_commitment,
+                        &leader_info.metadata_signature_ephemeral_pubkey,
+                        &leader_info.output_commitment,
+                        &Covenant::default(),
+                        &leader_info.encrypted_data,
+                        MicroMinotari::zero(),
+                    );
+
+                    let metadata_signature = match key_manager_service
+                        .sign_with_nonce_and_challenge(
+                            &party_info.sender_offset_key_id,
+                            &party_info.sender_offset_nonce_key_id,
+                            &challenge,
+                        )
+                        .await
+                    {
+                        Ok(signature) => signature,
+                        Err(e) => {
+                            eprintln!("\nError: Metadata signature SignMessage error! {}\n", e);
+                            error = true;
+                            break;
+                        },
+                    };
+
+                    if script_signature.get_signature() == Signature::default().get_signature()
+                        || metadata_signature.get_signature() == Signature::default().get_signature()
+                    {
+                        eprintln!(
+                            "\nError: Script and/or metadata signatures not created (index {})!\n",
+                            party_info.output_index
+                        );
+                        error = true;
+                        break;
+                    }
+
+                    outputs_for_leader.push(Step4OutputsForLeader {
+                        output_index: party_info.output_index,
+                        script_signature,
+                        metadata_signature,
+                        script_offset,
                     });
-                    println!(" - {} of {} created", index + 1, multisig_items.len());
+
+                    println!(
+                        "  Processed {} of {} transactions",
+                        i + 1,
+                        leader_info_indexed.outputs_for_parties.len()
+                    );
                 }
                 if error {
-                    return Ok(false);
+                    break;
                 }
-                write_to_json_file(&leader_out_file, true, outputs_for_leader)?;
 
-                let session_out_file = out_dir.join(get_file_name_with_network(STEP_1_SELF, None, Some(network)));
-                let outputs_for_self = CreateBridgeUtxoScriptInputsForSelf {
-                    account: args.account,
-                    network,
-                    multi_sig_count: args.multi_sig_count,
-                };
-                write_to_json_file(&session_out_file, true, outputs_for_self)?;
-
-                // Write all multisig_items to a comma-separated file
-                let csv_file_name = "multisig_items.csv";
-                let csv_out_file = out_dir.join(csv_file_name);
-                let mut file_stream = File::create(&csv_out_file).expect("Could not create 'multisig_items.csv'");
-                if let Err(e) = file_stream
-                    .write_all("index,value,maturity,original_maturity,fail_safe_height,beneficiary\n".as_bytes())
-                {
-                    eprintln!("\nError: Could not write file header ({})\n", e);
-                    return Err(CommandError::MultisigUtxo(
-                        "Could not write utxo-list file header".to_string(),
-                    ));
-                }
-                for (index, item) in multisig_items.iter().enumerate() {
-                    if let Err(e) = file_stream
-                        .write_all(format!("{},{}, {}\n", index, item.value, item.destination_address).as_bytes())
-                    {
-                        eprintln!("\nError: Could not write item ({})\n", e);
-                        return Err(CommandError::MultisigUtxo("Could not write utxo-list item".to_string()));
-                    }
-                }
+                let out_dir = out_dir(&session_id)?;
+                let out_file = out_dir.join(get_file_name(
+                    SPEND_STEP_4_LEADER,
+                    Some(party_info_indexed.alias.clone()),
+                ));
+                write_json_object_to_file_as_line(&out_file, true, session_info.clone())?;
+                write_json_object_to_file_as_line(
+                    &out_file,
+                    false,
+                    PreMineSpendStep4OutputsForLeader {
+                        outputs_for_leader,
+                        alias: party_info_indexed.alias.clone(),
+                    },
+                )?;
 
                 println!();
-                println!("Concluded 'create-multisig-utxo-party'");
-                println!("Your session ID is:                 '{}'", session_id);
-                println!("Your session's output directory is: '{}'", out_dir.display());
+                println!("Concluded step 4 'send-multisig-spend-input-output-sigs'");
                 println!(
-                    "Session info saved to:              '{}'",
-                    get_file_name_with_network(STEP_1_SELF, None, Some(network))
-                );
-                println!("Multisig UTXOs list saved to:         '{}'", csv_file_name);
-                println!(
-                    "Please send '{}' to leader for next step",
-                    if args.fail_safe_wallet {
-                        get_file_name_with_network(STEP_1_FAIL_SAFE_LEADER, Some(args.alias.clone()), Some(network))
-                    } else {
-                        get_file_name_with_network(STEP_1_LEADER, Some(args.alias.clone()), Some(network))
-                    }
+                    "Send '{}' to leader for step 5",
+                    get_file_name(SPEND_STEP_4_LEADER, Some(party_info_indexed.alias))
                 );
                 println!();
             },
 
-            // TODO bridge multisig command
-            CreateMultisigUtxo(args) => {
-                println!("\nRunning 'create-multisig-utxo' ...");
+            // TODO bridge multisig command finalise step 5 - Leader
+            FinaliseMultisigUtxoSpendTx(args) => {
+                temp_ban_peers(&wallet, &mut peer_list).await;
+                unban_peer_manager_peers = true;
 
-                // Read inputs from party members
-                let (mut party_files, mut threshold_inputs) =
-                    match read_inputs_from_party_members(&args.party_files_path) {
-                        Ok(val) => val,
-                        Err(e) => {
-                            eprintln!("\nError: {}\n", e);
-                            return Err(CommandError::MultisigUtxo(
-                                "read_inputs_from_party_members error".to_string(),
-                            ));
+                // Read session info
+
+                let session_info;
+                let mut session_id = args.session_id.clone();
+                loop {
+                    if session_id.is_empty() {
+                        eprintln!("\nError: No session id present\n");
+                        session_id = InputPrompt::<String>::new()
+                            .with_prompt("Please enter a session id to use")
+                            .interact()
+                            .unwrap();
+                        continue;
+                    }
+                    match read_verify_session_info::<PreMineSpendStep1SessionInfo>(&session_id) {
+                        Ok(v) => session_info = v,
+                        Err(_) => {
+                            eprintln!("\nError: invalid session id\n");
+                            session_id = InputPrompt::<String>::new()
+                                .with_prompt("Please enter a session id to use")
+                                .interact()
+                                .unwrap();
+                            continue;
                         },
-                    };
-
-                let (fail_safe_file, backup_inputs) = get_fail_safe_wallet(&mut threshold_inputs, &mut party_files)
-                    .map_err(|e| CommandError::MultisigUtxo(e))?;
-
-
-                // TODO define bridge item
-                let mut multisig_items: Vec<BridgeItem> = vec![];
-                multisig_items.push(BridgeItem {
-                    value: tari_core::transactions::tari_amount::MicroMinotari(1),
-                    destination_address: "0x123".to_ascii_lowercase(),
-                    fail_safe_height: 1000000,
-                    maturity: 100,
-                });
-
-                let network = Network::get_current_or_user_setting_or_default();
-                
-                // Perform party members input verification
-                if let Err(e) = verify_script_bridge_inputs(
-                    &threshold_inputs,
-                    &backup_inputs,
-                    &party_files,
-                    &fail_safe_file,
-                    &multisig_items,
-                    network,
-                ) {
-                    eprintln!("\nError: {}\n", e);
-                    return Err(CommandError::MultisigUtxo(
-                        "verify_script_bridge_inputs error".to_string(),
-                    ));
+                    }
+                    break;
                 }
 
-                // Extract the threshold and backup spend keys
-                let (threshold_spend_keys, backup_spend_keys, _all_spend_keys) =
-                    match extract_threshold_and_backup_spend_keys(&threshold_inputs, &backup_inputs) {
-                        Ok(keys) => keys,
-                        Err(e) => {
-                            eprintln!("\nError: {}\n", e);
-                            return Err(CommandError::MultisigUtxo(
-                                "verify_script_bridge_inputs error".to_string(),
-                            ));
-                        },
-                    };
+                // Read other parties info
+                let mut party_info = Vec::with_capacity(args.member.len());
+                for name in args.member {
+                    let file_name = get_file_name(SPEND_STEP_4_LEADER, Some(name.clone()));
+                    party_info.push(read_and_verify::<PreMineSpendStep4OutputsForLeader>(
+                        &args.session_id,
+                        &file_name,
+                        &session_info,
+                    )?);
+                }
+                // Read own party info
+                let leader_info = read_and_verify::<PreMineSpendStep3OutputsForSelf>(
+                    &args.session_id,
+                    &get_file_name(SPEND_STEP_3_SELF, None),
+                    &session_info,
+                )?;
 
-                // Create the outputs and kernel
-                let (outputs, kernel) =
-                    match create_utxo_bridge_info(&multisig_items, &threshold_spend_keys, &backup_spend_keys).await {
-                        Ok(values) => values,
-                        Err(e) => {
-                            eprintln!("\nError: {}\n", e);
-                            return Err(CommandError::MultisigUtxo("create_utxo_bridge_info error".to_string()));
-                        },
-                    };
-
-                // Create the genesis file
-                let (session_id, out_dir) = match create_multisig_utxo_output_dir(Some("leader"), Some(network)) {
-                    Ok(values) => values,
-                    Err(e) => {
-                        eprintln!("\nError: {}\n", e);
-                        return Err(CommandError::MultisigUtxo(
-                            "create_pre_mine_output_dir error".to_string(),
-                        ));
-                    },
-                };
-                let file_name = get_bridge_utxo_file_name();
-                let out_file = out_dir.join(&file_name);
-                let mut file_stream = match File::create(&out_file) {
-                    Ok(file) => file,
-                    Err(e) => {
-                        eprintln!("\nError: Could not create the UTXO file ({})\n", e);
-                        return Err(CommandError::MultisigUtxo(
-                            "get_bridge_utxo_file_name error".to_string(),
-                        ));
-                    },
-                };
-
+                // Verify index consistency
+                let session_info_indexes = session_info
+                    .recipient_info
+                    .iter()
+                    .map(|v| v.output_to_be_spend)
+                    .collect::<Vec<_>>();
+                let leader_info_indexes = leader_info
+                    .outputs_for_self
+                    .iter()
+                    .map(|v| v.output_index)
+                    .collect::<Vec<_>>();
+                if session_info_indexes != leader_info_indexes {
+                    eprintln!(
+                        "\nError: Mismatched output indexes detected! session {:?} vs. leader (self) {:?}\n",
+                        session_info_indexes, leader_info_indexes
+                    );
+                    break;
+                }
                 let mut error = false;
-                for output in outputs {
-                    let utxo_s = match serde_json::to_string(&output) {
-                        Ok(val) => val,
-                        Err(e) => {
-                            eprintln!("\nError: Could not serialize UTXO ({})\n", e);
-                            error = true;
-                            break;
-                        },
-                    };
-                    if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
-                        eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                for party in &party_info {
+                    let party_info_indexes = party
+                        .outputs_for_leader
+                        .iter()
+                        .map(|v| v.output_index)
+                        .collect::<Vec<_>>();
+                    if session_info_indexes != party_info_indexes {
+                        eprintln!(
+                            "\nError: Mismatched output indexes from '{}' detected! session {:?} vs. party {:?}\n",
+                            party.alias, session_info_indexes, party_info_indexes
+                        );
                         error = true;
                         break;
                     }
                 }
                 if error {
-                    return Err(CommandError::MultisigUtxo("error".to_string()));
-                }
-                let kernel = match serde_json::to_string(&kernel) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        eprintln!("\nError: Could not serialize kernel ({})\n", e);
-                        return Err(CommandError::MultisigUtxo("error".to_string()));
-                    },
-                };
-                if let Err(e) = file_stream.write_all(format!("{}\n", kernel).as_bytes()) {
-                    eprintln!("\nError: Could not write the genesis file ({})\n", e);
-                    return Err(CommandError::MultisigUtxo("error".to_string()));
+                    break;
                 }
 
-                for file in party_files.iter().chain(once(&fail_safe_file)) {
-                    let out_file = out_dir.join(file.file_name().expect("Path exists"));
-                    let _res = fs::copy(file.clone(), out_file.clone());
-                    let _res = fs::remove_file(file.clone());
+                // Flatten and transpose party_info to be indexed by output index
+                let party_info_flattened = party_info
+                    .iter()
+                    .map(|v1| v1.outputs_for_leader.clone())
+                    .collect::<Vec<_>>();
+                let mut party_info_per_index = Vec::with_capacity(party_info_flattened[0].len());
+                let number_of_parties = party_info_flattened.len();
+                for i in 0..party_info_flattened[0].len() {
+                    let mut outputs_per_index = Vec::with_capacity(number_of_parties);
+                    for outputs in &party_info_flattened {
+                        outputs_per_index.push(outputs[i].clone());
+                    }
+                    party_info_per_index.push(outputs_per_index);
+                }
+
+                // Create finalized spend transactions
+                let mut inputs = Vec::new();
+                let mut outputs = Vec::new();
+                let mut kernels = Vec::new();
+                let mut kernel_offset = PrivateKey::default();
+                for (i, (indexed_info, leader_self)) in party_info_per_index
+                    .iter()
+                    .zip(leader_info.outputs_for_self.iter())
+                    .enumerate()
+                {
+                    let mut metadata_signatures = Vec::with_capacity(party_info_per_index.len());
+                    let mut script_signatures = Vec::with_capacity(party_info_per_index.len());
+                    let mut offset = PrivateKey::default();
+                    for party_info in indexed_info {
+                        metadata_signatures.push(party_info.metadata_signature.clone());
+                        script_signatures.push(party_info.script_signature.clone());
+                        offset = &offset + &party_info.script_offset;
+                    }
+
+                    if let Err(e) = finalise_aggregate_utxo(
+                        transaction_service.clone(),
+                        leader_self.tx_id.as_u64(),
+                        metadata_signatures,
+                        script_signatures,
+                        offset,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "\nError: Error completing transaction '{}'! ({})\n",
+                            leader_self.tx_id, e
+                        );
+                        error = true;
+                        break;
+                    }
+
+                    // Collect all inputs, outputs and kernels that should go into the genesis block
+                    println!();
+                    if session_info.use_pre_mine_input_file {
+                        match transaction_service.get_any_transaction(leader_self.tx_id).await {
+                            Ok(Some(WalletTransaction::Completed(tx))) => {
+                                // Fees must be zero
+                                match tx.transaction.body.get_total_fee() {
+                                    Ok(fee) => {
+                                        if fee != MicroMinotari::zero() {
+                                            eprintln!(
+                                                "\nError: Transaction {} fee ({}) for does not equal zero!\n",
+                                                tx.tx_id, fee
+                                            );
+                                            error = true;
+                                            break;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        eprintln!("\nError: Transaction {}! ({})\n", tx.tx_id, e);
+                                        error = true;
+                                        break;
+                                    },
+                                }
+
+                                let mut utxo_sum = UncompressedCommitment::default();
+                                for output in tx.transaction.body.outputs() {
+                                    outputs.push(output.clone());
+                                    utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
+                                }
+                                for input in tx.transaction.body.inputs() {
+                                    inputs.push(input.clone());
+                                    match input.commitment() {
+                                        Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
+                                        Err(e) => {
+                                            eprintln!("\nError: Input commitment ({})!\n", e);
+                                            error = true;
+                                            break;
+                                        },
+                                    }
+                                }
+                                if error {
+                                    break;
+                                }
+                                let mut kernel_sum = UncompressedCommitment::default();
+                                for kernel in tx.transaction.body.kernels() {
+                                    kernels.push(kernel.clone());
+                                    kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
+                                }
+                                kernel_offset = &kernel_offset + &tx.transaction.offset;
+                                // Ensure that the balance equation holds:
+                                //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) +
+                                // total_offset
+                                let offset = CryptoFactories::default()
+                                    .commitment
+                                    .commit_value(&tx.transaction.offset, 0);
+                                if utxo_sum != &kernel_sum + &offset {
+                                    eprintln!(
+                                        "\nError: Transaction {} balance: UTXO sum {} vs. kernel sum + offset {}!\n",
+                                        tx.tx_id,
+                                        utxo_sum.to_hex(),
+                                        (&kernel_sum + &offset).to_hex()
+                                    );
+                                    error = true;
+                                    break;
+                                }
+                            },
+                            Ok(_) => {
+                                eprintln!(
+                                    "\nError: Transaction '{}' is not in a completed state!\n",
+                                    leader_self.tx_id
+                                );
+                                break;
+                            },
+                            Err(e) => {
+                                eprintln!("\nError: Transaction '{}' not found! ({})\n", leader_self.tx_id, e);
+                                break;
+                            },
+                        }
+                    }
+
+                    println!("  Processed {} of {}", i + 1, party_info_per_index.len());
+                }
+                if error {
+                    break;
+                }
+
+                let file_name = "multisig_addition.json".to_string(); //TODO file name?
+                let out_dir_path = out_dir(&args.session_id)?;
+                let out_file = out_dir_path.join(&file_name);
+                if session_info.use_pre_mine_input_file {
+                    // Ensure that the balance equation holds:
+                    //   sum(output commitments) - sum(input  commitments) =  sum(kernel excesses) + kernel_offset
+                    let mut utxo_sum = UncompressedCommitment::default();
+                    for output in &outputs {
+                        utxo_sum = &utxo_sum + &output.commitment.to_commitment()?;
+                    }
+                    for input in &inputs {
+                        match input.commitment() {
+                            Ok(commitment) => utxo_sum = &utxo_sum - &commitment.to_commitment()?,
+                            Err(e) => {
+                                eprintln!("\nError: Input commitment ({})!\n", e);
+                                break;
+                            },
+                        }
+                    }
+                    let mut kernel_sum = UncompressedCommitment::default();
+                    for kernel in &kernels {
+                        kernel_sum = &kernel_sum + &kernel.excess.to_commitment()?;
+                    }
+                    let offset = CryptoFactories::default().commitment.commit_value(&kernel_offset, 0);
+                    if utxo_sum != &kernel_sum + &offset {
+                        eprintln!(
+                            "\nError: Transactions balance: UTXO sum {} vs. kernel sum + offset {}!\n",
+                            utxo_sum.to_hex(),
+                            (&kernel_sum + &offset).to_hex()
+                        );
+                    }
+
+                    let mut file_stream = match File::create(&out_file) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            eprintln!("\nError: Could not create the pre-mine file ({})\n", e);
+                            break;
+                        },
+                    };
+
+                    let mut error = false;
+                    inputs.sort();
+                    for input in &inputs {
+                        let input_s = match serde_json::to_string(&input) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", input_s).as_bytes()) {
+                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    outputs.sort();
+                    for output in &outputs {
+                        let utxo_s = match serde_json::to_string(&output) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize UTXO ({})\n", e);
+                                error = true;
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", utxo_s).as_bytes()) {
+                            eprintln!("\nError: Could not write UTXO to file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    kernels.sort();
+                    for kernel in &kernels {
+                        let kernel_s = match serde_json::to_string(&kernel) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                eprintln!("\nError: Could not serialize kernel ({})\n", e);
+                                break;
+                            },
+                        };
+                        if let Err(e) = file_stream.write_all(format!("{}\n", kernel_s).as_bytes()) {
+                            eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                            error = true;
+                            break;
+                        }
+                    }
+                    if error {
+                        break;
+                    }
+                    let kernel_offset_s = match serde_json::to_string(&kernel_offset) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("\nError: Could not serialize kernel offset ({})\n", e);
+                            break;
+                        },
+                    };
+                    if let Err(e) = file_stream.write_all(format!("{}\n", kernel_offset_s).as_bytes()) {
+                        eprintln!("\nError: Could not write the genesis file ({})\n", e);
+                        break;
+                    }
                 }
 
                 println!();
-                println!("Concluded 'create-multisig-utxo'");
-                println!("Your session ID is:                 '{}'", session_id);
-                println!("Your session's output directory is: '{}'", out_dir.display());
-                println!("Party files moved to :              '{}'", out_dir.display());
-                println!("Outputs written to:                 '{}'", file_name);
+                if session_info.use_pre_mine_input_file {
+                    println!(
+                        "Genesis block immediate send-multisig spend information: '{}' in '{}'",
+                        file_name,
+                        out_dir_path.display()
+                    );
+                }
+                println!("Concluded step 5 'send-multisig-spend-aggregate-transaction'");
                 println!();
             },
         }
