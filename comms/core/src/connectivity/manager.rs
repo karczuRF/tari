@@ -332,6 +332,13 @@ impl ConnectivityManagerActor {
                 let allow_list = self.allow_list.clone();
                 let _result = reply.send(allow_list);
             },
+            GetSeeds(reply) => {
+                let seeds = self.peer_manager.get_seed_peers().await.unwrap_or_else(|e| {
+                    error!(target: LOG_TARGET, "Error when retrieving seed peers: {:?}", e);
+                    vec![]
+                });
+                let _result = reply.send(seeds);
+            },
             GetActiveConnections(reply) => {
                 let _result = reply.send(
                     self.pool
