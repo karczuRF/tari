@@ -43,7 +43,7 @@ pub struct DnsClient {
 }
 
 impl DnsClient {
-    pub async fn connect_secure(name_server: DnsNameServer) -> Result<Self, DnsClientError> {
+    pub fn connect_secure(name_server: DnsNameServer) -> Result<Self, DnsClientError> {
         let resolver = match name_server {
             DnsNameServer::System => TokioResolver::from_system_conf(TokioConnectionProvider::default())?,
             DnsNameServer::Custom { addr, dns_name } => Self::create_resolver(addr, dns_name, Protocol::Tls),
@@ -52,7 +52,7 @@ impl DnsClient {
         Ok(Self { resolver })
     }
 
-    pub async fn connect(name_server: DnsNameServer) -> Result<Self, DnsClientError> {
+    pub fn connect(name_server: DnsNameServer) -> Result<Self, DnsClientError> {
         let resolver = match name_server {
             DnsNameServer::System => TokioResolver::from_system_conf(TokioConnectionProvider::default())?,
             DnsNameServer::Custom { addr, dns_name } => Self::create_resolver(addr, dns_name, Protocol::default()),
@@ -76,9 +76,11 @@ impl DnsClient {
             bind_addr: None,
             tls_config: None,
         });
+
         let mut opts = ResolverOpts::default();
         opts.edns0 = true;
         opts.try_tcp_on_error = true;
+        opts.timeout = std::time::Duration::from_secs(1);
         TokioResolver::tokio(conf, opts)
     }
 
@@ -114,6 +116,12 @@ impl DnsClient {
                     }
                     // Exclude the first length byte from the string result
                     Some(String::from_utf8_lossy(&txt[1..=len]).to_string())
+                })
+                .inspect_err(|e| {
+                    warn!(
+                        target: LOG_TARGET,
+                        "Failed to parse DNS TXT record. Error: {}", e
+                    );
                 })
                 .transpose()
             })
