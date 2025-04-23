@@ -38,13 +38,7 @@ use crate::{
         chain_metadata_service::{ChainMetadataEvent, PeerChainMetadata},
         state_machine_service::{
             states::{
-                BlockSync,
-                DecideNextSync,
-                HeaderSyncState,
-                StateEvent,
-                StateEvent::FatalError,
-                StateInfo,
-                SyncStatus,
+                BlockSync, DecideNextSync, HeaderSyncState, StateEvent, StateEvent::FatalError, StateInfo, SyncStatus,
                 Waiting,
             },
             BaseNodeStateMachine,
@@ -265,9 +259,10 @@ impl Listening {
                         ahead_of_peers_counter += 1;
                         if ahead_of_peers_counter >= shared.config.initial_sync_peer_count {
                             self.set_synced_response(shared);
-                            debug!(target: LOG_TARGET, "Initial sync achieved");
+                            info!(target: LOG_TARGET, "Initial sync achieved");
                         } else {
-                            debug!(target: LOG_TARGET, "We are ahead of at least {} peers, waiting for more info", ahead_of_peers_counter);
+                            info!(target: LOG_TARGET, "We are ahead of at least {} peers, waiting for more info", ahead_of_peers_counter);
+                            self.set_synced_response(shared);
                         }
                     }
 
@@ -400,8 +395,8 @@ fn determine_sync_mode(
         // we only require some data from it, we need to ensure that they can supply the data we need, as in their
         // effective pruned horizon is greater than our local current chain tip.
         let pruned_mode = local.pruning_horizon() > 0;
-        let pruning_horizon_check = network.claimed_chain_metadata().pruning_horizon() > 0 &&
-            network.claimed_chain_metadata().pruning_horizon() < local.pruning_horizon();
+        let pruning_horizon_check = network.claimed_chain_metadata().pruning_horizon() > 0
+            && network.claimed_chain_metadata().pruning_horizon() < local.pruning_horizon();
         let pruning_height_check = network.claimed_chain_metadata().pruned_height() > local.best_block_height();
         let sync_able_peer = match (pruned_mode, pruning_horizon_check, pruning_height_check) {
             (true, true, _) => {
@@ -436,8 +431,8 @@ fn determine_sync_mode(
         if blocks_behind_before_considered_lagging > 0 {
             // Otherwise, only wait when the tip is above us, otherwise
             // chains with a lower height will never be reorged to.
-            if network_tip_height > local_tip_height &&
-                local_tip_height.saturating_add(blocks_behind_before_considered_lagging) > network_tip_height
+            if network_tip_height > local_tip_height
+                && local_tip_height.saturating_add(blocks_behind_before_considered_lagging) > network_tip_height
             {
                 info!(
                     target: LOG_TARGET,
