@@ -101,6 +101,7 @@ pub struct UtxoScannerTestInterface {
     _temp_dir: TempDir,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup(
     key_manager: MemoryDbKeyManager,
     mode: UtxoScannerMode,
@@ -213,6 +214,7 @@ async fn setup(
             base_node_service_handle,
             one_sided_message_watch_receiver,
             recovery_message_watch_receiver,
+            14,
         )
         .await;
 
