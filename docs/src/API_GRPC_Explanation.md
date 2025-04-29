@@ -5,6 +5,7 @@ Below is documentation regarding various gRPC methods available for the Minotari
 
 - [Introduction](#introduction)
   - [General Structure](#general-structure)
+  - [Tari Address Structure](#tari-address-structure-with-optional-payment-id)
   - [Code Generation from .proto files](#understanding-code-generation-from-proto-files)
   - [Loading the Protocol Buffer Definition](#loading-the-protocol-buffer-definition)
   - [Instantiating the Client](#instantiating-the-client)
@@ -48,6 +49,44 @@ message GetBalanceResponse {
   uint64 pending_outgoing_balance = 3;
 }
 ```
+
+### Tari Address Structure (with Optional Payment ID)
+Tari addresses are an address scheme used by Tari. Each address includes the necessary information for identifying the network, verifying integrity, and optionally embedding an **encrypted payment identifier**. The [RFC-0155 TariAddress](https://rfc.tari.com/RFC-0155_TariAddress) can be reviewed for more information.
+
+#### Binary Structure
+
+| Offset | Field            | Rule/Use                                                                 |
+|--------|------------------|---------------------------------------------------------------------------|
+| 0      | Network ID       | Indicates which network the address belongs to (e.g., Mainnet/Testnet).   |
+| 1      | Features         | Flags whether it's a one-sided or interactive address, and if payment ID is used. |
+| 2–33   | Public View Key  | Used by receivers to detect payments addressed to them.                   |
+| 34–65  | Public Spend Key | Required to authorize spending from the wallet.                           |
+| 66–N   | Payment ID       | *(Optional)* Encrypted tag embedded for tracking the purpose of payment. |
+| N+1    | Checksum         | Calculated using the [Damm algorithm](https://en.wikipedia.org/wiki/Damm_algorithm). |
+
+#### Payment ID Feature (Optional)
+
+The optional Payment ID feature allows an exchange, merchant or other service to append a payment ID to the address in a manner that preserves privacy while still allowing the service to track payments, withdrawals and other activity against a particular user. This is done by requesting an address from the existing wallet via the gRPC method `GetPaymentIdAddress`, described later in the document.
+
+When included, the payment_id is encrypted using the public keys of the address. The Features byte uses bitflag 2 (value 4) to indicate the presence of a payment ID. For example:
+   
+   impl TariAddressFeatures: u8 {
+        // this forces a transaction to include the following payment id
+        const PAYMENT_ID = 0b0000_0100;
+        const INTERACTIVE = 0b0000_0010;
+        ///one sided payment
+        const ONE_SIDED = 0b0000_0001;
+    }
+
+The maximum allowed size for `payment_id` is **256 bytes**. Larger values will raise:
+  ```rust
+  TariAddressError::PaymentIdTooLarge
+  ```
+
+Please note that fees will be applicable for every bit used in the `payment_id`.
+
+#### Encoding
+After serialization, the complete byte array is encoded using **Base58**, resulting in a human-readable Tari address.
 
 ### Understanding Code Generation from `.proto` Files
 The `.proto` file, such as [`wallet.proto`][wallet-proto], acts as a **shared contract** that defines all available services, methods, and message structures for the Minotari Wallet's gRPC API. However, it is not executable code by itself.
@@ -275,6 +314,47 @@ const userPaymentId = {
 }
 ```
 
+### Get Payment ID Address
+The `GetPaymentIdAddress` gRPC method returns an address appended with a payment ID, derived from an existing address. The payment ID is an optional, additional piece of metadata (like an invoice number or customer reference).
+
+- `payment_id` (optional) must be passed as a UTF-8 encoded byte array. If derived from a string, the `payment_id` must be encoded in UTF-8.
+
+**Example:**
+```javascript
+const crypto = require('crypto');
+
+// Generate a 32-byte random payment_id
+const paymentId = crypto.randomBytes(32); // This will be a Buffer
+
+client.GetPaymentIdAddress({ payment_id: paymentId }, (error, response) => {
+  if (error) {
+    console.error('gRPC Error:', error);
+    return;
+  }
+
+  console.log(JSON.stringify({
+    interactive_address: Buffer.from(response.interactive_address).toString('hex'),
+    one_sided_address: Buffer.from(response.one_sided_address).toString('hex'),
+    interactive_address_base58: response.interactive_address_base58,
+    one_sided_address_base58: response.one_sided_address_base58,
+    interactive_address_emoji: response.interactive_address_emoji,
+    one_sided_address_emoji: response.one_sided_address_emoji
+  }, null, 2));
+});
+```
+
+**Example of JSON response**:
+```json
+{
+  "interactive_address": "0411aabbccddeeff00112233445566778899aabbccddeeff0011223344556677",
+  "one_sided_address": "02ff8899aabbccddeeff00112233445566778899aabbccddeeff001122334455",
+  "interactive_address_base58": "14HVCEeZC2RGE4SDn3yG.....6xouGvS5SXwEvXKwK3zLz2rgReh",
+  "one_sided_address_base58": "12HVCEeZC2RGE4SDn3yGwqz.....obB1a6xouGvS5SXwEvXKwK3zLz2rgReL",
+  "interactive_address_emoji": "🐢🌊💤🔌🚑🐛🏦⚽🍓🐭🚁🎢🔪🥐👛🍞.....🍐🍟💵🎉🍯🎁🎾🎼💻💄🍳🍐🤔🥝🍫👅🚀🐬🎭",
+  "one_sided_address_emoji": "🐢📟💤🔌🚑🐛🏦⚽🍓🐭🚁🎢🔪🥐👛🍞📜.....🍐🍟💵🎉🍯🎁🎾🎼💻💄🍳🍐🤔🥝🍫👅🚀🐬🎭"
+}
+```
+
 ### Get Transactions by Payment ID
 The `GetCompletedTransactions` method retrieves all completed transactions against a particular wallet, which can be optionally filtered by passing the `payment_id` to show only completed transactions associated with the payment ID.
 
@@ -395,9 +475,6 @@ Example:
      });
      console.log('Transfer successful:', transferResponse);
 ```
-
-
-
 
 ## Unrelated functions not available in the gRPC but useful
 ### Fetch UTXOs by Block ID
