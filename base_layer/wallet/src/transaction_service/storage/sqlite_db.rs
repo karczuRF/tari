@@ -1048,6 +1048,22 @@ impl TransactionBackend for TransactionServiceSqliteDatabase {
         Ok(coinbases)
     }
 
+    fn find_completed_transactions_for_payment_id(
+        &self,
+        payment_id: Vec<u8>,
+    ) -> Result<Vec<CompletedTransaction>, TransactionStorageError> {
+        let mut conn = self.database_connection.get_pooled_connection()?;
+        let cipher = acquire_read_lock!(self.cipher);
+        completed_transactions::table
+            .filter(completed_transactions::user_payment_id.eq(payment_id))
+            .load::<CompletedTransactionSql>(&mut conn)?
+            .into_iter()
+            .map(|ct: CompletedTransactionSql| {
+                CompletedTransaction::try_from(ct, &cipher).map_err(TransactionStorageError::from)
+            })
+            .collect::<Result<Vec<CompletedTransaction>, TransactionStorageError>>()
+    }
+
     fn fetch_unmined_coinbase_transactions_from_height(
         &self,
         height: u64,
@@ -1152,6 +1168,7 @@ struct InboundTransactionSql {
     send_count: i32,
     last_send_timestamp: Option<NaiveDateTime>,
     payment_id: Option<Vec<u8>>,
+    user_payment_id: Option<Vec<u8>>,
 }
 
 impl InboundTransactionSql {
@@ -1327,6 +1344,12 @@ impl InboundTransactionSql {
     fn try_from(i: InboundTransaction, cipher: &XChaCha20Poly1305) -> Result<Self, TransactionStorageError> {
         let receiver_protocol_bytes = bincode::serialize(&i.receiver_protocol)
             .map_err(|e| TransactionStorageError::BincodeSerialize(e.to_string()))?;
+        let user_payment_id = i.payment_id.user_data_as_bytes();
+        let user_payment_id = if user_payment_id.is_empty() {
+            None
+        } else {
+            Some(user_payment_id)
+        };
         let i = Self {
             tx_id: i.tx_id.as_u64() as i64,
             source_address: i.source_address.to_vec(),
@@ -1338,6 +1361,7 @@ impl InboundTransactionSql {
             send_count: i.send_count as i32,
             last_send_timestamp: i.last_send_timestamp.map(|t| t.naive_utc()),
             payment_id: Some(i.payment_id.to_bytes()),
+            user_payment_id,
         };
         i.encrypt(cipher).map_err(TransactionStorageError::AeadError)
     }
@@ -1417,6 +1441,7 @@ struct OutboundTransactionSql {
     send_count: i32,
     last_send_timestamp: Option<NaiveDateTime>,
     payment_id: Option<Vec<u8>>,
+    user_payment_id: Option<Vec<u8>>,
 }
 
 impl OutboundTransactionSql {
@@ -1576,6 +1601,12 @@ impl OutboundTransactionSql {
     fn try_from(o: OutboundTransaction, cipher: &XChaCha20Poly1305) -> Result<Self, TransactionStorageError> {
         let sender_protocol_bytes = bincode::serialize(&o.sender_protocol)
             .map_err(|e| TransactionStorageError::BincodeSerialize(e.to_string()))?;
+        let user_payment_id = o.payment_id.user_data_as_bytes();
+        let user_payment_id = if user_payment_id.is_empty() {
+            None
+        } else {
+            Some(user_payment_id)
+        };
         let outbound_tx = Self {
             tx_id: o.tx_id.as_u64() as i64,
             destination_address: o.destination_address.to_vec(),
@@ -1588,6 +1619,7 @@ impl OutboundTransactionSql {
             send_count: o.send_count as i32,
             last_send_timestamp: o.last_send_timestamp.map(|t| t.naive_utc()),
             payment_id: Some(o.payment_id.to_bytes()),
+            user_payment_id,
         };
 
         outbound_tx.encrypt(cipher).map_err(TransactionStorageError::AeadError)
@@ -1682,6 +1714,7 @@ pub struct CompletedTransactionSql {
     transaction_signature_nonce: Vec<u8>,
     transaction_signature_key: Vec<u8>,
     payment_id: Option<Vec<u8>>,
+    user_payment_id: Option<Vec<u8>>,
 }
 
 impl CompletedTransactionSql {
@@ -1948,6 +1981,12 @@ impl CompletedTransactionSql {
     fn try_from(c: CompletedTransaction, cipher: &XChaCha20Poly1305) -> Result<Self, TransactionStorageError> {
         let transaction_bytes =
             bincode::serialize(&c.transaction).map_err(|e| TransactionStorageError::BincodeSerialize(e.to_string()))?;
+        let user_payment_id = c.payment_id.user_data_as_bytes();
+        let user_payment_id = if user_payment_id.is_empty() {
+            None
+        } else {
+            Some(user_payment_id)
+        };
         let output = Self {
             tx_id: c.tx_id.as_u64() as i64,
             source_address: c.source_address.to_vec(),
@@ -1968,6 +2007,7 @@ impl CompletedTransactionSql {
             transaction_signature_nonce: c.transaction_signature.get_compressed_public_nonce().to_vec(),
             transaction_signature_key: c.transaction_signature.get_signature().to_vec(),
             payment_id: Some(c.payment_id.to_bytes()),
+            user_payment_id,
         };
 
         output.encrypt(cipher).map_err(TransactionStorageError::AeadError)

@@ -255,13 +255,23 @@ enum TransactionStatus {
   TRANSACTION_STATUS_COINBASE_NOT_IN_BLOCK_CHAIN = 14;
 }
 
-message GetCompletedTransactionsRequest {}
+message GetCompletedTransactionsRequest {
+  UserPaymentId payment_id = 1;
+}
 
 message GetCompletedTransactionsResponse {
   TransactionInfo transaction = 1;
 }
 
-message GetBalanceRequest {}
+message GetBalanceRequest {
+  UserPaymentId payment_id = 1;
+}
+
+message UserPaymentId {
+  bytes u256 = 1;
+  string utf8_string = 2;
+  bytes user_bytes = 3;
+}
 
 message GetStateRequest {}
 
