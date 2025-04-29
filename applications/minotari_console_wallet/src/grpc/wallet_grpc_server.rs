@@ -57,6 +57,7 @@ use minotari_app_grpc::tari_rpc::{
     GetConnectivityRequest,
     GetIdentityRequest,
     GetIdentityResponse,
+    GetPaymentIdAddressRequest,
     GetStateRequest,
     GetStateResponse,
     GetTransactionInfoRequest,
@@ -256,6 +257,38 @@ impl wallet_server::Wallet for WalletGrpcServer {
         Ok(Response::new(GetAddressResponse {
             interactive_address: interactive_address.to_vec(),
             one_sided_address: one_sided_address.to_vec(),
+        }))
+    }
+
+    async fn get_payment_id_address(
+        &self,
+        request: Request<GetPaymentIdAddressRequest>,
+    ) -> Result<Response<GetCompleteAddressResponse>, Status> {
+        let message = request.into_inner();
+
+        let interactive_address = self
+            .wallet
+            .get_wallet_interactive_address()
+            .await
+            .map_err(|e| Status::internal(format!("{:?}", e)))?;
+        let interactive_address = interactive_address
+            .create_payment_id_address(message.payment_id.clone())
+            .map_err(|e| Status::internal(format!("{:?}", e)))?;
+        let one_sided_address = self
+            .wallet
+            .get_wallet_one_sided_address()
+            .await
+            .map_err(|e| Status::internal(format!("{:?}", e)))?;
+        let one_sided_address = one_sided_address
+            .create_payment_id_address(message.payment_id)
+            .map_err(|e| Status::internal(format!("{:?}", e)))?;
+        Ok(Response::new(GetCompleteAddressResponse {
+            interactive_address: interactive_address.to_vec(),
+            one_sided_address: one_sided_address.to_vec(),
+            interactive_address_base58: interactive_address.to_base58(),
+            one_sided_address_base58: one_sided_address.to_base58(),
+            interactive_address_emoji: interactive_address.to_emoji_string(),
+            one_sided_address_emoji: one_sided_address.to_emoji_string(),
         }))
     }
 
@@ -496,7 +529,10 @@ impl wallet_server::Wallet for WalletGrpcServer {
                         tx_id,
                         tx,
                         amount,
-                        PaymentId::open("Claiming HTLC transaction with pre-image", TxType::ClaimAtomicSwap),
+                        PaymentId::open_from_string(
+                            "Claiming HTLC transaction with pre-image",
+                            TxType::ClaimAtomicSwap,
+                        ),
                     )
                     .await
                 {
@@ -551,7 +587,7 @@ impl wallet_server::Wallet for WalletGrpcServer {
                         tx_id,
                         tx,
                         amount,
-                        PaymentId::open("Creating HTLC refund transaction", TxType::HtlcAtomicSwapRefund),
+                        PaymentId::open_from_string("Creating HTLC refund transaction", TxType::HtlcAtomicSwapRefund),
                     )
                     .await
                 {
@@ -921,7 +957,7 @@ impl wallet_server::Wallet for WalletGrpcServer {
                 usize::try_from(message.split_count)
                     .map_err(|_| Status::internal("Count not convert u64 to usize".to_string()))?,
                 MicroMinotari::from(message.fee_per_gram),
-                PaymentId::open("Creating coin-split transaction", TxType::CoinSplit),
+                PaymentId::open_from_string("Creating coin-split transaction", TxType::CoinSplit),
             )
             .await
             .map_err(|e| Status::internal(format!("{:?}", e)))?;
@@ -1072,7 +1108,7 @@ impl wallet_server::Wallet for WalletGrpcServer {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         output = output.with_script(script![Nop].map_err(|e| Status::invalid_argument(e.to_string()))?);
-        let payment_id = PaymentId::open(
+        let payment_id = PaymentId::open_from_string(
             &format!("Template registration '{}'", template_name),
             TxType::CodeTemplateRegistration,
         );
