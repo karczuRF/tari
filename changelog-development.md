@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.16.0-pre.0](https://github.com/tari-project/tari/compare/v1.15.0-pre.0...v1.16.0-pre.0) (2025-04-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace SMT with jellyfish merkle tree (#6991)
+
+### Features
+
+* add option to do search via payment id ([#6993](https://github.com/tari-project/tari/issues/6993)) ([cf43bf7](https://github.com/tari-project/tari/commit/cf43bf7098c6ab389124da662db313845d24b3f5))
+* change wallet birthday offset ([#6992](https://github.com/tari-project/tari/issues/6992)) ([15a78c6](https://github.com/tari-project/tari/commit/15a78c6f7e57fb1a4c766c206769610c10a6f04e))
+* create new payment_id enabled address format ([#6997](https://github.com/tari-project/tari/issues/6997)) ([f947b6b](https://github.com/tari-project/tari/commit/f947b6b7fb5540c48fcb65e743c287af18878ded))
+* **doc:** gRPC document explaining some basic calls ([#6988](https://github.com/tari-project/tari/issues/6988)) ([c6b2ed7](https://github.com/tari-project/tari/commit/c6b2ed7be399c2bb4f383e90368a97d59f1db552))
+* **grpc:** return best block height from synced node ([#6984](https://github.com/tari-project/tari/issues/6984)) ([22331c7](https://github.com/tari-project/tari/commit/22331c7f216dc32c57724ee7272c5116fd0e3648))
+* replace SMT with jellyfish merkle tree ([#6991](https://github.com/tari-project/tari/issues/6991)) ([b5df32f](https://github.com/tari-project/tari/commit/b5df32ffbf77700e8a5c68878240cebcbd683f37))
+
+
+### Bug Fixes
+
+* address CR issues in PR [#6988](https://github.com/tari-project/tari/issues/6988) ([#6989](https://github.com/tari-project/tari/issues/6989)) ([693cd7a](https://github.com/tari-project/tari/commit/693cd7ab56deddcd089cfbc4b4128af8e94e9786))
+* **dns:** switch from relative to absolute DNS record for checkpoints ([#6987](https://github.com/tari-project/tari/issues/6987)) ([baae842](https://github.com/tari-project/tari/commit/baae842913f7c387ca00e060d6bea315de8c67a1))
+* revert listening is_synced fix ([2f742a1](https://github.com/tari-project/tari/commit/2f742a1b115592c34f4f97f2fe014f2f409d8c44))
+
 ## [1.15.0-pre.0](https://github.com/tari-project/tari/compare/v1.14.1-pre.0...v1.15.0-pre.0) (2025-04-23)
 
 

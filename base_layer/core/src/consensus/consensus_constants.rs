@@ -486,12 +486,12 @@ impl ConsensusConstants {
         algos.insert(PowAlgorithm::Sha3x, PowAlgorithmConstants {
             min_difficulty: Difficulty::from_u64(60_000_000).expect("valid difficulty"),
             max_difficulty: Difficulty::max(),
-            target_time: 240,
+            target_time: 60,
         });
         algos.insert(PowAlgorithm::RandomX, PowAlgorithmConstants {
             min_difficulty: Difficulty::from_u64(60_000).expect("valid difficulty"),
             max_difficulty: Difficulty::max(),
-            target_time: 240,
+            target_time: 60,
         });
         let (input_version_range, output_version_range, kernel_version_range) = version_zero();
         let consensus_constants1 = ConsensusConstants {
