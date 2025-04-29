@@ -28,18 +28,9 @@ use tari_common_types::{
 };
 use tari_core::{
     blocks::{Block, BlockHeader, BlockHeaderAccumulatedData, ChainBlock, ChainHeader, NewBlockTemplate},
-    chain_storage::{
-        calculate_validator_node_mr,
-        BlockAddResult,
-        BlockchainBackend,
-        BlockchainDatabase,
-        ChainStorageError,
-    },
+    chain_storage::{BlockAddResult, BlockchainBackend, BlockchainDatabase, ChainStorageError},
     consensus::{emission::Emission, ConsensusConstants, ConsensusManager},
-    input_mr_hash_from_pruned_mmr,
     kernel_mr_hash_from_mmr,
-    kernel_mr_hash_from_pruned_mmr,
-    output_mr_hash_from_smt,
     proof_of_work::{sha3x_difficulty, AccumulatedDifficulty, AchievedTargetDifficulty, Difficulty},
     transactions::{
         tari_amount::MicroMinotari,
@@ -60,8 +51,6 @@ use tari_core::{
     },
     KernelMmr,
     OutputSmt,
-    PrunedInputMmr,
-    PrunedKernelMmr,
     PrunedOutputMmr,
 };
 use tari_mmr::{
@@ -69,7 +58,7 @@ use tari_mmr::{
     sparse_merkle_tree::{NodeKey, ValueHash},
 };
 use tari_script::script;
-use tari_utilities::{hex::Hex, ByteArray};
+use tari_utilities::ByteArray;
 
 pub async fn create_coinbase(
     value: MicroMinotari,
@@ -152,32 +141,6 @@ async fn genesis_template(
     )
     .unwrap();
     (block, output)
-}
-
-#[test]
-fn print_new_genesis_block_values() {
-    let vn_mr = calculate_validator_node_mr(&[]);
-    let validator_node_mr = FixedHash::try_from(vn_mr).unwrap();
-
-    // Note: An em empty MMR will have a root of `MerkleMountainRange::<D, B>::null_hash()`
-    let kernel_mr = kernel_mr_hash_from_mmr(&KernelMmr::new(Vec::new())).unwrap();
-    let kernel_mr_pruned = kernel_mr_hash_from_pruned_mmr(&PrunedKernelMmr::new(PrunedHashSet::default())).unwrap();
-    assert_eq!(kernel_mr, kernel_mr_pruned);
-    let input_mr = input_mr_hash_from_pruned_mmr(&PrunedInputMmr::new(PrunedHashSet::default())).unwrap();
-    let output_mr = output_mr_hash_from_smt(&mut OutputSmt::new()).unwrap();
-
-    // Note: This is printed in the same order as needed for 'fn get_xxxx_genesis_block_raw()'
-    println!();
-    println!("Genesis block constants");
-    println!();
-    println!("header output_mr:           {}", output_mr.to_hex());
-    println!("header output_mmr_size:     0");
-    println!("header kernel_mr:           {}", kernel_mr.to_hex());
-    println!("header kernel_mmr_size:     0");
-    println!("header validator_node_mr:   {}", validator_node_mr.to_hex());
-    println!("header input_mr:            {}", input_mr.to_hex());
-    println!("header total_kernel_offset: {}", FixedHash::zero().to_hex());
-    println!("header total_script_offset: {}", FixedHash::zero().to_hex());
 }
 
 /// Create a genesis block returning it with the spending key for the coinbase utxo

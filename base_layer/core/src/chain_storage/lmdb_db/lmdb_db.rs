@@ -23,28 +23,16 @@ use std::{
     cmp::max,
     convert::TryFrom,
     fmt,
-    fs,
-    fs::File,
+    fs::{self, File},
     ops::Deref,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-        RwLock,
-    },
+    sync::Arc,
     time::Instant,
 };
 
 use fs2::FileExt;
-use lmdb_zero::{
-    open,
-    traits::AsLmdbBytes,
-    ConstTransaction,
-    Database,
-    Environment,
-    ReadTransaction,
-    WriteTransaction,
-};
+use jmt::{storage::TreeWriter, JellyfishMerkleTree, KeyHash};
+use lmdb_zero::{open, ConstTransaction, Database, Environment, ReadTransaction, WriteTransaction};
 use log::*;
 use primitive_types::U256;
 use serde::{Deserialize, Serialize};
@@ -62,14 +50,18 @@ use tari_common_types::{
         UncompressedCommitment,
     },
 };
-use tari_mmr::sparse_merkle_tree::{DeleteResult, NodeKey, ValueHash};
 use tari_storage::lmdb_store::{db, LMDBBuilder, LMDBConfig, LMDBStore, BYTES_PER_MB};
 use tari_utilities::{
     hex::{to_hex, Hex},
     ByteArray,
 };
 
-use super::{cursors::KeyPrefixCursor, lmdb::lmdb_get_prefix_cursor};
+use super::{
+    cursors::KeyPrefixCursor,
+    lmdb::lmdb_get_prefix_cursor,
+    lmdb_tree_reader::{LmdbTreeReader, OwnedLmdbTreeReader},
+    lmdb_tree_writer::LmdbTreeWriter,
+};
 use crate::{
     blocks::{
         Block,
@@ -110,6 +102,7 @@ use crate::{
             TransactionKernelRowData,
             TransactionOutputRowData,
         },
+        smt_hasher::SmtHasher,
         stats::DbTotalSizeStats,
         utxo_mined_info::OutputMinedInfo,
         BlockchainBackend,
@@ -124,7 +117,6 @@ use crate::{
         ValidatorNodeEntry,
     },
     consensus::{ConsensusConstants, ConsensusManager},
-    output_mr_hash_from_smt,
     proof_of_work::{monero_rx::MoneroPowData, PowAlgorithm},
     transactions::{
         aggregated_body::AggregateBody,
@@ -137,7 +129,6 @@ use crate::{
             ValidatorNodeRegistration,
         },
     },
-    OutputSmt,
     PrunedKernelMmr,
 };
 
@@ -173,7 +164,8 @@ const LMDB_DB_VALIDATOR_NODES: &str = "validator_nodes";
 const LMDB_DB_VALIDATOR_NODES_MAPPING: &str = "validator_nodes_mapping";
 const LMDB_DB_TEMPLATE_REGISTRATIONS: &str = "template_registrations";
 const LMDB_DB_UTXO_SMT: &str = "utxo_smt";
-const SMT_CACHE_PERIOD: u64 = 500;
+const LMDB_DB_JMT_VALUE_DATA: &str = "jmt_value_data";
+const LMDB_DB_JMT_NODE_DATA: &str = "jmt_node_data";
 
 /// HeaderHash(32), mmr_pos(8), hash(32)
 type KernelKey = CompositeKey<72>;
@@ -183,8 +175,6 @@ type ValidatorNodeRegistrationKey = CompositeKey<40>;
 pub fn create_lmdb_database<P: AsRef<Path>>(
     path: P,
     config: LMDBConfig,
-    prune_interval: u64,
-    pruning_horizon: u64,
     consensus_manager: ConsensusManager,
 ) -> Result<LMDBDatabase, ChainStorageError> {
     let flags = db::CREATE;
@@ -227,16 +217,12 @@ pub fn create_lmdb_database<P: AsRef<Path>>(
         .add_database(LMDB_DB_VALIDATOR_NODES_MAPPING, flags)
         .add_database(LMDB_DB_TEMPLATE_REGISTRATIONS, flags | db::DUPSORT)
         .add_database(LMDB_DB_UTXO_SMT, flags)
+        .add_database(LMDB_DB_JMT_VALUE_DATA, flags )
+        .add_database(LMDB_DB_JMT_NODE_DATA, flags)
         .build()
         .map_err(|err| ChainStorageError::CriticalError(format!("Could not create LMDB store:{}", err)))?;
     debug!(target: LOG_TARGET, "LMDB database creation successful");
-    LMDBDatabase::new(
-        &lmdb_store,
-        file_lock,
-        consensus_manager,
-        prune_interval,
-        pruning_horizon,
-    )
+    LMDBDatabase::new(&lmdb_store, file_lock, consensus_manager)
 }
 
 /// This is a lmdb-based blockchain database for persistent storage of the chain state.
@@ -299,10 +285,10 @@ pub struct LMDBDatabase {
     template_registrations: DatabaseRef,
     /// Stores a cache of the sparse merkle tree on the latest mod 1000 height
     utxo_smt: DatabaseRef,
-
+    jmt_value_data: DatabaseRef,
+    jmt_node_data: DatabaseRef,
     _file_lock: Arc<File>,
     consensus_manager: ConsensusManager,
-    smt_cache_period: u64,
 }
 
 impl LMDBDatabase {
@@ -310,17 +296,8 @@ impl LMDBDatabase {
         store: &LMDBStore,
         file_lock: File,
         consensus_manager: ConsensusManager,
-        prune_interval: u64,
-        pruning_horizon: u64,
     ) -> Result<Self, ChainStorageError> {
         let env = store.env();
-        let smt_cache_period = if pruning_horizon == 0 || prune_interval == 0 {
-            SMT_CACHE_PERIOD
-        } else {
-            // we make sure we run this in the pruning interval, 2 is just a same number here.
-            prune_interval / 2
-        };
-
         let db = Self {
             metadata_db: get_database(store, LMDB_DB_METADATA)?,
             headers_db: get_database(store, LMDB_DB_HEADERS)?,
@@ -350,11 +327,12 @@ impl LMDBDatabase {
             validator_nodes_mapping: get_database(store, LMDB_DB_VALIDATOR_NODES_MAPPING)?,
             template_registrations: get_database(store, LMDB_DB_TEMPLATE_REGISTRATIONS)?,
             utxo_smt: get_database(store, LMDB_DB_UTXO_SMT)?,
+            jmt_value_data: get_database(store, LMDB_DB_JMT_VALUE_DATA)?,
+            jmt_node_data: get_database(store, LMDB_DB_JMT_NODE_DATA)?,
             env,
             env_config: store.env_config(),
             _file_lock: Arc::new(file_lock),
             consensus_manager,
-            smt_cache_period,
         };
 
         run_migrations(&db)?;
@@ -388,18 +366,8 @@ impl LMDBDatabase {
                 InsertChainHeader { header } => {
                     self.insert_header(&write_txn, header.header(), header.accumulated_data())?;
                 },
-                InsertTipBlockBody {
-                    block,
-                    smt,
-                    allow_smt_change,
-                } => {
-                    self.insert_tip_block_body(
-                        &write_txn,
-                        block.header(),
-                        block.block().body.clone(),
-                        smt.clone(),
-                        allow_smt_change.clone(),
-                    )?;
+                InsertTipBlockBody { block } => {
+                    self.insert_tip_block_body(&write_txn, block.header(), block.block().body.clone())?;
                 },
                 InsertKernel {
                     header_hash,
@@ -442,8 +410,8 @@ impl LMDBDatabase {
                         "orphan_chain_tips_db",
                     )?;
                 },
-                DeleteTipBlock(hash, smt) => {
-                    self.delete_tip_block_body(&write_txn, hash, smt.clone())?;
+                DeleteTipBlock(hash) => {
+                    self.delete_tip_block_body(&write_txn, hash)?;
                 },
                 InsertMoneroSeedHeight(data, height) => {
                     self.insert_monero_seed_height(&write_txn, data, *height)?;
@@ -560,7 +528,7 @@ impl LMDBDatabase {
         Ok(())
     }
 
-    fn all_dbs(&self) -> [(&'static str, &DatabaseRef); 28] {
+    fn all_dbs(&self) -> [(&'static str, &DatabaseRef); 30] {
         [
             (LMDB_DB_METADATA, &self.metadata_db),
             (LMDB_DB_HEADERS, &self.headers_db),
@@ -596,6 +564,8 @@ impl LMDBDatabase {
             (LMDB_DB_VALIDATOR_NODES_MAPPING, &self.validator_nodes_mapping),
             (LMDB_DB_TEMPLATE_REGISTRATIONS, &self.template_registrations),
             (LMDB_DB_UTXO_SMT, &self.utxo_smt),
+            (LMDB_DB_JMT_VALUE_DATA, &self.jmt_value_data),
+            (LMDB_DB_JMT_NODE_DATA, &self.jmt_node_data),
         ]
     }
 
@@ -979,7 +949,6 @@ impl LMDBDatabase {
         &self,
         write_txn: &WriteTransaction<'_>,
         block_hash: &HashOutput,
-        smt: Arc<RwLock<OutputSmt>>,
     ) -> Result<(), ChainStorageError> {
         let hash_hex = block_hash.to_hex();
         debug!(target: LOG_TARGET, "Deleting block `{}`", hash_hex);
@@ -996,6 +965,16 @@ impl LMDBDatabase {
             )));
         }
 
+        let smt_writer = LmdbTreeWriter::new(
+            write_txn,
+            self.jmt_node_data.clone(),
+            LMDB_DB_JMT_NODE_DATA,
+            self.jmt_value_data.clone(),
+            LMDB_DB_JMT_VALUE_DATA,
+        );
+        smt_writer
+            .delete_all_for_version(height)
+            .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
         lmdb_delete(
             write_txn,
             &self.block_accumulated_data_db,
@@ -1003,30 +982,29 @@ impl LMDBDatabase {
             "block_accumulated_data_db",
         )?;
 
-        let mut output_smt = smt.write().map_err(|e| {
-            error!(
-                target: LOG_TARGET,
-                "delete_tip_block_body could not get a write lock on the smt. {:?}", e
-            );
-            ChainStorageError::AccessError("write lock on smt".into())
-        })?;
-
-        self.delete_block_inputs_outputs(write_txn, block_hash.as_slice(), &mut output_smt)?;
+        self.delete_block_inputs_outputs(write_txn, block_hash.as_slice())?;
 
         let new_tip_header = self.fetch_chain_header_by_height(prev_height)?;
-        let root = output_mr_hash_from_smt(&mut output_smt)?;
-        if root != new_tip_header.header().output_mr {
+        let reader = LmdbTreeReader::new(write_txn, self.jmt_node_data.clone());
+        let jmt = JellyfishMerkleTree::<_, SmtHasher>::new(&reader);
+
+        let root = jmt
+            .get_root_hash(new_tip_header.header().height)
+            .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
+
+        if root.0.as_slice() != new_tip_header.header().output_mr.as_slice() {
             error!(
                 target: LOG_TARGET,
                 "Deleting block, new smt root(#{}) did not match expected (#{}) smt root",
-                    root.to_hex(),
+                    hex::encode(root.0.as_slice()),
                     new_tip_header.header().output_mr.to_hex(),
             );
-            return Err(ChainStorageError::InvalidOperation(
-                "Deleting block, new smt root did not match expected smt root".to_string(),
-            ));
+            return Err(ChainStorageError::InvalidOperation(format!(
+                "Deleting block, new smt root(#{}) did not match expected (#{}) smt root",
+                hex::encode(root.0.as_slice()),
+                new_tip_header.header().output_mr.to_hex(),
+            )));
         }
-
         self.delete_block_kernels(write_txn, block_hash.as_slice())?;
 
         Ok(())
@@ -1036,7 +1014,7 @@ impl LMDBDatabase {
         &self,
         txn: &WriteTransaction<'_>,
         block_hash: &[u8],
-        output_smt: &mut OutputSmt,
+        // output_smt: &mut OutputSmt,
     ) -> Result<(), ChainStorageError> {
         let output_rows = lmdb_delete_keys_starting_with::<TransactionOutputRowData>(txn, &self.utxos_db, block_hash)?;
         debug!(target: LOG_TARGET, "Deleted {} outputs...", output_rows.len());
@@ -1062,18 +1040,19 @@ impl LMDBDatabase {
             if utxo.output.is_burned() {
                 continue;
             }
-            let smt_key = NodeKey::try_from(utxo.output.commitment.as_bytes())?;
-            match output_smt.delete(&smt_key)? {
-                DeleteResult::Deleted(_value_hash) => {},
-                DeleteResult::KeyNotFound => {
-                    error!(
-                        target: LOG_TARGET,
-                        "Could not find input({}) in SMT",
-                        utxo.output.commitment.to_hex(),
-                    );
-                    return Err(ChainStorageError::UnspendableInput);
-                },
-            };
+            // Done outside of this
+            // let smt_key = NodeKey::try_from(utxo.output.commitment.as_bytes())?;
+            // match output_smt.delete(&smt_key)? {
+            //     DeleteResult::Deleted(_value_hash) => {},
+            //     DeleteResult::KeyNotFound => {
+            //         error!(
+            //             target: LOG_TARGET,
+            //             "Could not find input({}) in SMT",
+            //             utxo.output.commitment.to_hex(),
+            //         );
+            //         return Err(ChainStorageError::UnspendableInput);
+            //     },
+            // };
             lmdb_delete(
                 txn,
                 &self.utxo_commitment_index,
@@ -1123,16 +1102,16 @@ impl LMDBDatabase {
                 rp_hash,
                 utxo_mined_info.output.minimum_value_promise,
             );
-            let smt_key = NodeKey::try_from(input.commitment()?.as_bytes())?;
-            let smt_node = ValueHash::try_from(input.smt_hash(utxo_mined_info.mined_height).as_slice())?;
-            if let Err(e) = output_smt.insert(smt_key, smt_node) {
-                error!(
-                    target: LOG_TARGET,
-                    "Output commitment({}) already in SMT",
-                    input.commitment()?.to_hex(),
-                );
-                return Err(e.into());
-            }
+            // let smt_key = NodeKey::try_from(input.commitment()?.as_bytes())?;
+            // let smt_node = ValueHash::try_from(input.smt_hash(utxo_mined_info.mined_height).as_slice())?;
+            // // if let Err(e) = output_smt.insert(smt_key, smt_node) {
+            //     error!(
+            //         target: LOG_TARGET,
+            //         "Output commitment({}) already in SMT",
+            //         input.commitment()?.to_hex(),
+            //     );
+            //     return Err(e.into());
+            // }
 
             trace!(target: LOG_TARGET, "Input moved to UTXO set: {}", input);
             lmdb_insert(
@@ -1266,17 +1245,11 @@ impl LMDBDatabase {
         txn: &WriteTransaction<'_>,
         header: &BlockHeader,
         body: AggregateBody,
-        smt: Arc<RwLock<OutputSmt>>,
-        allow_smt_change: Arc<AtomicBool>,
+        // smt_writer: &mut LmdbTreeWriter,
     ) -> Result<(), ChainStorageError> {
-        let mut output_smt = smt.write().map_err(|e| {
-            error!(
-                target: LOG_TARGET,
-                "insert_tip_block_body could not get a write lock on the smt. {:?}", e
-            );
-            ChainStorageError::AccessError("write lock on smt".into())
-        })?;
-        let can_we_change_smt = allow_smt_change.load(Ordering::SeqCst);
+        // let smt_reader = LmdbTreeReader::new();
+        let smt_reader = LmdbTreeReader::new(txn, self.jmt_node_data.clone());
+        let output_smt = JellyfishMerkleTree::<_, SmtHasher>::new(&smt_reader);
         if self.fetch_block_accumulated_data(txn, header.height + 1)?.is_some() {
             return Err(ChainStorageError::InvalidOperation(format!(
                 "Attempted to insert block at height {} while next block already exists",
@@ -1342,6 +1315,7 @@ impl LMDBDatabase {
             self.insert_kernel(txn, &block_hash, &kernel, pos)?;
         }
 
+        let mut batch = Vec::with_capacity(outputs.len() + inputs.len());
         for output in outputs {
             trace!(
                 target: LOG_TARGET,
@@ -1349,17 +1323,25 @@ impl LMDBDatabase {
                 output.commitment.to_hex(),
                 output.hash()
             );
-            if !output.is_burned() && can_we_change_smt {
-                let smt_key = NodeKey::try_from(output.commitment.as_bytes())?;
-                let smt_node = ValueHash::try_from(output.smt_hash(header.height).as_slice())?;
-                if let Err(e) = output_smt.insert(smt_key, smt_node) {
-                    error!(
-                        target: LOG_TARGET,
-                        "Output commitment({}) already in SMT",
-                        output.commitment.to_hex(),
-                    );
-                    return Err(e.into());
-                }
+            if !output.is_burned() {
+                // let smt_key = NodeKey::try_from(output.commitment.as_bytes())?;
+                let smt_key = KeyHash(
+                    output
+                        .commitment
+                        .as_bytes()
+                        .try_into()
+                        .expect("Key hash is always 32 bytes"),
+                );
+                let smt_node = output.smt_hash(header.height).to_vec();
+                // if let Err(e) = output_smt.insert(smt_key, smt_node) {
+                //     error!(
+                //         target: LOG_TARGET,
+                //         "Output commitment({}) already in SMT",
+                //         output.commitment.to_hex(),
+                //     );
+                //     return Err(e.into());
+                // }
+                batch.push((smt_key, Some(smt_node)));
             }
 
             let output_hash = output.hash();
@@ -1392,20 +1374,28 @@ impl LMDBDatabase {
         // unique_id_index expects inputs to be inserted before outputs
         for input in inputs {
             let input_with_output_data = self.input_with_output_data(txn, input)?;
-            let smt_key = NodeKey::try_from(input_with_output_data.commitment()?.as_bytes())?;
-            if can_we_change_smt {
-                match output_smt.delete(&smt_key)? {
-                    DeleteResult::Deleted(_value_hash) => {},
-                    DeleteResult::KeyNotFound => {
-                        error!(
-                            target: LOG_TARGET,
-                            "Could not find input({}) in SMT",
-                            input_with_output_data.commitment()?.to_hex(),
-                        );
-                        return Err(ChainStorageError::UnspendableInput);
-                    },
-                };
-            }
+            // let smt_key = NodeKey::try_from(input_with_output_data.commitment()?.as_bytes())?;
+            let smt_key = KeyHash(
+                input_with_output_data
+                    .commitment()?
+                    .as_bytes()
+                    .try_into()
+                    .expect("Key hash is always 32 bytes"),
+            );
+            batch.push((smt_key, None));
+            // if can_we_change_smt {
+            //     match output_smt.delete(&smt_key)? {
+            //         DeleteResult::Deleted(_value_hash) => {},
+            //         DeleteResult::KeyNotFound => {
+            //             error!(
+            //                 target: LOG_TARGET,
+            //                 "Could not find input({}) in SMT",
+            //                 input_with_output_data.commitment()?.to_hex(),
+            //             );
+            //             return Err(ChainStorageError::UnspendableInput);
+            //         },
+            //     };
+            // }
 
             let features = input_with_output_data.features()?;
             if let Some(vn_reg) = features
@@ -1434,6 +1424,35 @@ impl LMDBDatabase {
             )?;
         }
 
+        let (root, ops) = output_smt
+            .put_value_set(batch, header.height)
+            .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
+        let smt_writer = LmdbTreeWriter::new(
+            txn,
+            self.jmt_node_data.clone(),
+            LMDB_DB_JMT_NODE_DATA,
+            self.jmt_value_data.clone(),
+            LMDB_DB_JMT_VALUE_DATA,
+        );
+
+        if header.output_mr.as_slice() != root.0.as_slice() {
+            warn!(
+                target: LOG_TARGET,
+                "The output merkle root in the header does not match the calculated root. Header: {}, calculated: {}",
+                header.output_mr.to_hex(),
+                root.0.to_hex()
+            );
+            return Err(ChainStorageError::InvalidOperation(format!(
+                "The output merkle root in the header does not match the calculated root. Header: {}, calculated:
+            {}",
+                header.output_mr.to_hex(),
+                root.0.to_hex()
+            )));
+        }
+        smt_writer
+            .write_node_batch(&ops.node_batch)
+            .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
+
         self.insert_block_accumulated_data(
             txn,
             header.height,
@@ -1442,10 +1461,6 @@ impl LMDBDatabase {
                 CompressedCommitment::from_commitment(total_kernel_sum),
             ),
         )?;
-        allow_smt_change.store(false, Ordering::SeqCst);
-        if header.height % self.smt_cache_period == 0 {
-            self.insert_smt(txn, &output_smt, header.height)?;
-        }
 
         Ok(())
     }
@@ -1839,64 +1854,6 @@ impl LMDBDatabase {
     fn get_consensus_constants(&self, height: u64) -> &ConsensusConstants {
         self.consensus_manager.consensus_constants(height)
     }
-
-    fn insert_smt(&self, txn: &WriteTransaction<'_>, smt: &OutputSmt, height: u64) -> Result<(), ChainStorageError> {
-        let start = Instant::now();
-        let k = MetadataKey::Smt;
-
-        trace!(target: LOG_TARGET,
-            "Saving SMT at height: {}",
-            height
-        );
-
-        // This is best effort, if it fails (typically when the entry does not yet exist) we just log it
-        if let Err(e) = lmdb_delete(txn, &self.utxo_smt, &k.as_u32(), LMDB_DB_UTXO_SMT) {
-            debug!(
-                "Could NOT delete '{}' db with key '{}' ({})",
-                LMDB_DB_UTXO_SMT,
-                to_hex(k.as_u32().as_lmdb_bytes()),
-                e
-            );
-        }
-
-        #[allow(clippy::cast_possible_truncation)]
-        let estimated_bytes = smt.size().saturating_mul(225) as usize;
-
-        match lmdb_replace(txn, &self.utxo_smt, &k.as_u32(), smt, Some(estimated_bytes)) {
-            Ok(_) => {
-                trace!(
-                target: LOG_TARGET,
-                    "Inserted ~{} MB with key '{}' into '{}' (size {}) in {:.2?}",
-                    estimated_bytes / BYTES_PER_MB,
-                    to_hex(k.as_u32().as_lmdb_bytes()),
-                    LMDB_DB_UTXO_SMT,
-                    smt.size(),
-                    start.elapsed()
-                );
-                lmdb_replace(
-                    txn,
-                    &self.metadata_db,
-                    &MetadataKey::SmtHeight.as_u32(),
-                    &height,
-                    Some(8),
-                )?;
-                Ok(())
-            },
-            Err(e) => {
-                if let ChainStorageError::DbResizeRequired(Some(val)) = e {
-                    trace!(
-                    target: LOG_TARGET,
-                            "Could NOT insert {} MB with key '{}' into '{}' (size {})",
-                            val / BYTES_PER_MB,
-                            to_hex(k.as_u32().as_lmdb_bytes()),
-                            LMDB_DB_UTXO_SMT,
-                            smt.size()
-                        );
-                }
-                Err(e)
-            },
-        }
-    }
 }
 
 pub fn create_recovery_lmdb_database<P: AsRef<Path>>(path: P) -> Result<(), ChainStorageError> {
@@ -1929,6 +1886,13 @@ fn acquire_exclusive_file_lock(db_path: &Path) -> Result<File, ChainStorageError
 }
 
 impl BlockchainBackend for LMDBDatabase {
+    fn create_smt_reader(&self) -> Result<OwnedLmdbTreeReader<'_>, ChainStorageError> {
+        let read_tx = self.read_transaction()?;
+        let smt_reader = OwnedLmdbTreeReader::new(read_tx, self.jmt_node_data.clone());
+
+        Ok(smt_reader)
+    }
+
     fn write(&mut self, txn: DbTransaction) -> Result<(), ChainStorageError> {
         if txn.operations().is_empty() {
             return Ok(());
@@ -2725,62 +2689,6 @@ impl BlockchainBackend for LMDBDatabase {
         }
         Ok(result)
     }
-
-    fn calculate_tip_smt(&self) -> Result<OutputSmt, ChainStorageError> {
-        let start = Instant::now();
-        let metadata = self.fetch_chain_metadata()?;
-        let txn = self.read_transaction()?;
-        let k = MetadataKey::SmtHeight;
-        let mut starting_height = 0;
-        if let Some(val) = lmdb_get::<u32, u64>(&txn, &self.metadata_db, &k.as_u32())? {
-            starting_height = val + 1u64;
-        }
-
-        let k = MetadataKey::Smt;
-        let mut smt = match lmdb_get(&txn, &self.utxo_smt, &k.as_u32())? {
-            Some(smt) => smt,
-            _ => OutputSmt::new(),
-        };
-        trace!(
-            target: LOG_TARGET,
-            "Calculating new smt at height: #{}",
-            metadata.best_block_height(),
-        );
-
-        for height in starting_height..=metadata.best_block_height() {
-            let header = self.fetch_chain_header_by_height(height)?;
-            let outputs =
-                self.fetch_outputs_in_block_with_spend_state(header.hash(), Some(metadata.best_block_hash()))?;
-            for output in outputs {
-                if !output.1 && !output.0.is_burned() {
-                    let smt_key = NodeKey::try_from(output.0.commitment.as_bytes())?;
-                    let smt_node = ValueHash::try_from(output.0.smt_hash(header.header().height).as_slice())?;
-                    if let Err(e) = smt.insert(smt_key, smt_node) {
-                        error!(
-                            target: LOG_TARGET,
-                            "Output commitment({}) already in SMT",
-                            output.0.commitment.to_hex(),
-                        );
-                        return Err(e.into());
-                    }
-                }
-            }
-            let inputs = self.fetch_inputs_in_block(header.hash())?;
-            for input in inputs {
-                let txn = self.read_transaction()?;
-                let input_with_output_data = self.input_with_output_data(&txn, input)?;
-                let smt_key = NodeKey::try_from(input_with_output_data.commitment()?.as_bytes())?;
-                smt.delete(&smt_key)?;
-            }
-        }
-        trace!(
-            target: LOG_TARGET,
-            "Finished calculating new smt (size: {}), took: {:.2?}",
-            smt.size(),
-            start.elapsed()
-        );
-        Ok(smt)
-    }
 }
 
 // Fetch the chain metadata
@@ -2905,8 +2813,6 @@ enum MetadataKey {
     HorizonData,
     BestBlockTimestamp,
     MigrationVersion,
-    Smt,
-    SmtHeight,
 }
 
 impl MetadataKey {
@@ -2927,8 +2833,6 @@ impl fmt::Display for MetadataKey {
             MetadataKey::HorizonData => write!(f, "Database info"),
             MetadataKey::BestBlockTimestamp => write!(f, "Chain tip block timestamp"),
             MetadataKey::MigrationVersion => write!(f, "Migration version"),
-            MetadataKey::Smt => write!(f, "Chain Sparse Merkle Tree"),
-            MetadataKey::SmtHeight => write!(f, "Chain Sparse Merkle Tree saved height"),
         }
     }
 }

@@ -57,6 +57,7 @@ async fn create_next_block(
 ) -> (Arc<Block>, WalletOutput) {
     let rules = db.rules();
     let (block, output) = create_block(
+        db,
         rules,
         prev_block,
         BlockSpec::new()
@@ -72,7 +73,7 @@ async fn create_next_block(
     (Arc::new(block), output)
 }
 
-fn apply_mmr_to_block(db: &BlockchainDatabase<TempDatabase>, block: Block) -> Block {
+pub fn apply_mmr_to_block(db: &BlockchainDatabase<TempDatabase>, block: Block) -> Block {
     let (mut block, mmr_roots) = db.calculate_mmr_roots(block).unwrap();
     block.header.input_mr = mmr_roots.input_mr;
     block.header.output_mr = mmr_roots.output_mr;
