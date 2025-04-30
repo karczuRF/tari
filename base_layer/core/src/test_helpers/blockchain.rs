@@ -27,14 +27,21 @@ use std::{
     sync::Arc,
 };
 
+use jmt::{
+    mock::MockTreeStore,
+    storage::{TreeReader, TreeUpdateBatch, TreeWriter},
+    JellyfishMerkleTree,
+    KeyHash,
+};
 use tari_common::configuration::Network;
 use tari_common_types::{
     chain_metadata::ChainMetadata,
     tari_address::TariAddress,
-    types::{BadBlock, CompressedCommitment, CompressedPublicKey, HashOutput, Signature},
+    types::{BadBlock, CompressedCommitment, CompressedPublicKey, FixedHash, HashOutput, Signature},
 };
 use tari_storage::lmdb_store::LMDBConfig;
 use tari_test_utils::paths::create_temporary_data_path;
+use tari_utilities::ByteArray;
 
 use super::{create_block, mine_to_difficulty};
 use crate::{
@@ -58,6 +65,7 @@ use crate::{
         OutputMinedInfo,
         OwnedLmdbTreeReader,
         Reorg,
+        SmtHasher,
         TemplateRegistrationEntry,
         Validators,
     },
@@ -438,19 +446,57 @@ pub async fn create_chained_blocks<T: Into<BlockSpecs>, TDB: BlockchainBackend>(
     genesis_block: Arc<ChainBlock>,
 ) -> (Vec<String>, HashMap<String, Arc<ChainBlock>>) {
     let mut block_hashes = HashMap::new();
+    let gb_height = genesis_block.header().height;
     block_hashes.insert("GB".to_string(), genesis_block);
     let rules = ConsensusManager::builder(Network::LocalNet).build().unwrap();
     let km = create_memory_db_key_manager().unwrap();
     let blocks: BlockSpecs = blocks.into();
     let mut block_names = Vec::with_capacity(blocks.len());
     let (script_key_id, wallet_payment_address) = default_coinbase_entities(&km).await;
+    let mock_store = MockTreeStore::new(true);
+    // let smt_reader = db.create_smt_reader().unwrap();
+    // let restore = JellyfishMerkleRestore::<SmtHasher>::new(
+    //     mock_store,
+    //     genesis_block.header().height,
+    //     genesis_block.header().output_mr,
+    // )
+    // .unwrap();
+    let jmt = JellyfishMerkleTree::<_, SmtHasher>::new(&mock_store);
+
+    for h in 0..=gb_height {
+        let mut batch = vec![];
+        let h_block = db.fetch_block(h, false).unwrap();
+
+        for output in h_block.block().body.outputs() {
+            if !output.is_burned() {
+                let smt_key = KeyHash(output.commitment.as_bytes().try_into().expect("commitment is 32 bytes"));
+                let smt_value = output.smt_hash(h_block.block().header.height);
+                batch.push((smt_key, Some(smt_value.to_vec())));
+            }
+        }
+        for input in h_block.block().body.inputs() {
+            let smt_key = KeyHash(
+                input
+                    .commitment()
+                    .unwrap()
+                    .as_bytes()
+                    .try_into()
+                    .expect("Commitment is 32 bytes"),
+            );
+            batch.push((smt_key, None));
+        }
+        let (root, updates) = jmt.put_value_set(batch, h).unwrap();
+        mock_store.write_node_batch(&updates.node_batch).unwrap();
+        assert_eq!(root.0.as_slice(), h_block.block().header.output_mr.as_slice());
+    }
+
     for block_spec in blocks {
         let prev_block = block_hashes
             .get(block_spec.parent)
             .unwrap_or_else(|| panic!("Could not find block {}", block_spec.parent));
         let name = block_spec.name;
         let difficulty = block_spec.difficulty;
-        let (block, _) = create_block(
+        let (mut block, _) = create_block(
             db,
             &rules,
             prev_block.block(),
@@ -461,6 +507,10 @@ pub async fn create_chained_blocks<T: Into<BlockSpecs>, TDB: BlockchainBackend>(
             None,
         )
         .await;
+        let updates = update_block_and_smt(&mut block, &jmt);
+
+        mock_store.write_node_batch(&updates.node_batch).unwrap();
+
         let block = mine_block(block, prev_block.accumulated_data(), difficulty);
         block_names.push(name.to_string());
         block_hashes.insert(name.to_string(), block);
@@ -514,6 +564,37 @@ pub async fn create_orphan_chain<T: Into<BlockSpecs>>(
     db.write(txn).unwrap();
 
     (names, chain)
+}
+
+pub fn update_block_and_smt<T: TreeReader>(
+    block: &mut Block,
+    jmt: &JellyfishMerkleTree<T, SmtHasher>,
+) -> TreeUpdateBatch {
+    // let jmt = JellyfishMerkleTree::<_, SmtHasher>::new(smt_reader);
+    let mut batch = vec![];
+    for output in block.body.outputs() {
+        if !output.is_burned() {
+            let smt_key = KeyHash(output.commitment.as_bytes().try_into().expect("commitment is 32 bytes"));
+            let smt_value = output.smt_hash(block.header.height);
+
+            batch.push((smt_key, Some(smt_value.to_vec())));
+        }
+    }
+    for input in block.body.inputs() {
+        let smt_key = KeyHash(
+            input
+                .commitment()
+                .unwrap()
+                .as_bytes()
+                .try_into()
+                .expect("Commitment is 32 bytes"),
+        );
+        batch.push((smt_key, None));
+    }
+    let (root, updates) = jmt.put_value_set(batch, block.header.height).unwrap();
+    // let root = FixedHash::try_from(smt.hash().as_slice()).unwrap();
+    block.header.output_mr = FixedHash::try_from(root.0.as_slice()).unwrap();
+    updates
 }
 
 pub struct TestBlockchain {

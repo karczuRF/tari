@@ -81,7 +81,6 @@ use tari_common_types::types::HashOutput;
 mod template_registation;
 pub use template_registation::TemplateRegistrationEntry;
 mod smt_hasher;
-#[cfg(test)]
 pub use smt_hasher::SmtHasher;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]

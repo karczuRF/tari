@@ -21,6 +21,7 @@
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use std::{convert::TryFrom, sync::Arc};
 
+use jmt::{mock::MockTreeStore, JellyfishMerkleTree, KeyHash};
 use rand::{rngs::OsRng, RngCore};
 use tari_common_types::{
     key_branches::TransactionKeyManagerBranch,
@@ -28,7 +29,7 @@ use tari_common_types::{
 };
 use tari_core::{
     blocks::{Block, BlockHeader, BlockHeaderAccumulatedData, ChainBlock, ChainHeader, NewBlockTemplate},
-    chain_storage::{BlockAddResult, BlockchainBackend, BlockchainDatabase, ChainStorageError},
+    chain_storage::{BlockAddResult, BlockchainBackend, BlockchainDatabase, ChainStorageError, SmtHasher},
     consensus::{emission::Emission, ConsensusConstants, ConsensusManager},
     kernel_mr_hash_from_mmr,
     proof_of_work::{sha3x_difficulty, AccumulatedDifficulty, AchievedTargetDifficulty, Difficulty},
@@ -50,13 +51,9 @@ use tari_core::{
         transaction_key_manager::{MemoryDbKeyManager, TransactionKeyManagerInterface, TxoStage},
     },
     KernelMmr,
-    OutputSmt,
     PrunedOutputMmr,
 };
-use tari_mmr::{
-    pruned_hashset::PrunedHashSet,
-    sparse_merkle_tree::{NodeKey, ValueHash},
-};
+use tari_mmr::pruned_hashset::PrunedHashSet;
 use tari_script::script;
 use tari_utilities::ByteArray;
 
@@ -169,17 +166,23 @@ fn update_genesis_block_mmr_roots(template: NewBlockTemplate) -> Result<Block, C
     let mut header = BlockHeader::from(header);
     let kernel_mmr = KernelMmr::new(kernel_hashes);
     header.kernel_mr = kernel_mr_hash_from_mmr(&kernel_mmr)?;
-    let mut mmr = OutputSmt::new();
+    let mock_store = MockTreeStore::new(true);
+    let jmt = JellyfishMerkleTree::<_, SmtHasher>::new(&mock_store);
     let mut output_mr = PrunedOutputMmr::new(PrunedHashSet::default());
+    let mut batch = vec![];
     for output in body.outputs() {
         output_mr.push(output.hash().to_vec()).unwrap();
-        let smt_key = NodeKey::try_from(output.commitment.as_bytes())?;
-        let smt_node = ValueHash::try_from(output.smt_hash(header.height).as_slice())?;
-        mmr.insert(smt_key, smt_node).unwrap();
+        if !output.is_burned() {
+            let smt_key = KeyHash(output.commitment.as_bytes().try_into().expect("commitment is 32 bytes"));
+            let smt_value = output.smt_hash(header.height);
+
+            batch.push((smt_key, Some(smt_value.to_vec())));
+        }
     }
     header.output_smt_size = body.outputs().len() as u64;
 
-    header.output_mr = FixedHash::try_from(mmr.hash().as_slice()).unwrap();
+    let (root, _) = jmt.put_value_set(batch, 0).unwrap();
+    header.output_mr = FixedHash::try_from(root.0.as_slice()).unwrap();
     header.block_output_mr = FixedHash::try_from(output_mr.get_merkle_root().unwrap()).unwrap();
     Ok(Block { header, body })
 }

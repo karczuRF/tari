@@ -245,6 +245,13 @@ impl ConsensusConstants {
         self.proof_of_work.len() as u64
     }
 
+    // Should only be used in tests
+    pub fn set_pow_target_block_interval(&mut self, pow_algo: PowAlgorithm, target_time: u64) {
+        if let Some(v) = self.proof_of_work.get_mut(&pow_algo) {
+            v.target_time = target_time;
+        }
+    }
+
     /// The target time used by the difficulty adjustment algorithms, their target time is the target block interval /
     /// algo block percentage
     pub fn pow_target_block_interval(&self, pow_algo: PowAlgorithm) -> u64 {

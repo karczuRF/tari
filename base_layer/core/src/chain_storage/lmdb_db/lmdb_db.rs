@@ -166,6 +166,7 @@ const LMDB_DB_TEMPLATE_REGISTRATIONS: &str = "template_registrations";
 const LMDB_DB_UTXO_SMT: &str = "utxo_smt";
 const LMDB_DB_JMT_VALUE_DATA: &str = "jmt_value_data";
 const LMDB_DB_JMT_NODE_DATA: &str = "jmt_node_data";
+const LMDB_DB_JMT_UNIQUE_KEY_DATA: &str = "jmt_unique_key_data";
 
 /// HeaderHash(32), mmr_pos(8), hash(32)
 type KernelKey = CompositeKey<72>;
@@ -219,6 +220,7 @@ pub fn create_lmdb_database<P: AsRef<Path>>(
         .add_database(LMDB_DB_UTXO_SMT, flags)
         .add_database(LMDB_DB_JMT_VALUE_DATA, flags )
         .add_database(LMDB_DB_JMT_NODE_DATA, flags)
+        .add_database(LMDB_DB_JMT_UNIQUE_KEY_DATA, flags)
         .build()
         .map_err(|err| ChainStorageError::CriticalError(format!("Could not create LMDB store:{}", err)))?;
     debug!(target: LOG_TARGET, "LMDB database creation successful");
@@ -287,6 +289,7 @@ pub struct LMDBDatabase {
     utxo_smt: DatabaseRef,
     jmt_value_data: DatabaseRef,
     jmt_node_data: DatabaseRef,
+    jmt_unique_key_data: DatabaseRef,
     _file_lock: Arc<File>,
     consensus_manager: ConsensusManager,
 }
@@ -329,6 +332,7 @@ impl LMDBDatabase {
             utxo_smt: get_database(store, LMDB_DB_UTXO_SMT)?,
             jmt_value_data: get_database(store, LMDB_DB_JMT_VALUE_DATA)?,
             jmt_node_data: get_database(store, LMDB_DB_JMT_NODE_DATA)?,
+            jmt_unique_key_data: get_database(store, LMDB_DB_JMT_UNIQUE_KEY_DATA)?,
             env,
             env_config: store.env_config(),
             _file_lock: Arc::new(file_lock),
@@ -528,7 +532,7 @@ impl LMDBDatabase {
         Ok(())
     }
 
-    fn all_dbs(&self) -> [(&'static str, &DatabaseRef); 30] {
+    fn all_dbs(&self) -> [(&'static str, &DatabaseRef); 31] {
         [
             (LMDB_DB_METADATA, &self.metadata_db),
             (LMDB_DB_HEADERS, &self.headers_db),
@@ -566,6 +570,7 @@ impl LMDBDatabase {
             (LMDB_DB_UTXO_SMT, &self.utxo_smt),
             (LMDB_DB_JMT_VALUE_DATA, &self.jmt_value_data),
             (LMDB_DB_JMT_NODE_DATA, &self.jmt_node_data),
+            (LMDB_DB_JMT_UNIQUE_KEY_DATA, &self.jmt_unique_key_data),
         ]
     }
 
@@ -968,9 +973,8 @@ impl LMDBDatabase {
         let smt_writer = LmdbTreeWriter::new(
             write_txn,
             self.jmt_node_data.clone(),
-            LMDB_DB_JMT_NODE_DATA,
             self.jmt_value_data.clone(),
-            LMDB_DB_JMT_VALUE_DATA,
+            self.jmt_unique_key_data.clone(),
         );
         smt_writer
             .delete_all_for_version(height)
@@ -1021,7 +1025,7 @@ impl LMDBDatabase {
         let inputs = lmdb_delete_keys_starting_with::<TransactionInputRowData>(txn, &self.inputs_db, block_hash)?;
         debug!(target: LOG_TARGET, "Deleted {} input(s)...", inputs.len());
 
-        for utxo in &output_rows {
+        for (_, utxo) in &output_rows {
             trace!(target: LOG_TARGET, "Deleting UTXO `{}`", to_hex(utxo.hash.as_slice()));
             lmdb_delete(
                 txn,
@@ -1033,7 +1037,7 @@ impl LMDBDatabase {
             let output_hash = utxo.output.hash();
             // if an output was already spent in the block, it was never created as unspent, so dont delete it as it
             // does not exist here
-            if inputs.iter().any(|r| r.input.output_hash() == output_hash) {
+            if inputs.iter().any(|(_, r)| r.input.output_hash() == output_hash) {
                 continue;
             }
             // if an output was burned, it was never created as an unspent utxo
@@ -1062,7 +1066,7 @@ impl LMDBDatabase {
         }
         // Move inputs in this block back into the unspent set, any outputs spent within this block they will be removed
         // by deleting all the block's outputs below
-        for row in inputs {
+        for (_, row) in inputs {
             // If input spends an output in this block, don't add it to the utxo set
             let output_hash = row.input.output_hash();
 
@@ -1072,7 +1076,7 @@ impl LMDBDatabase {
                 output_hash.as_slice(),
                 "deleted_txo_hash_to_header_index",
             )?;
-            if output_rows.iter().any(|r| r.hash == output_hash) {
+            if output_rows.iter().any(|(_, r)| r.hash == output_hash) {
                 continue;
             }
 
@@ -1128,7 +1132,7 @@ impl LMDBDatabase {
     fn delete_block_kernels(&self, txn: &WriteTransaction<'_>, block_hash: &[u8]) -> Result<(), ChainStorageError> {
         let kernels = lmdb_delete_keys_starting_with::<TransactionKernelRowData>(txn, &self.kernels_db, block_hash)?;
         debug!(target: LOG_TARGET, "Deleted {} kernels...", kernels.len());
-        for kernel in kernels {
+        for (_, kernel) in kernels {
             trace!(
                 target: LOG_TARGET,
                 "Deleting excess `{}`",
@@ -1324,7 +1328,6 @@ impl LMDBDatabase {
                 output.hash()
             );
             if !output.is_burned() {
-                // let smt_key = NodeKey::try_from(output.commitment.as_bytes())?;
                 let smt_key = KeyHash(
                     output
                         .commitment
@@ -1333,14 +1336,7 @@ impl LMDBDatabase {
                         .expect("Key hash is always 32 bytes"),
                 );
                 let smt_node = output.smt_hash(header.height).to_vec();
-                // if let Err(e) = output_smt.insert(smt_key, smt_node) {
-                //     error!(
-                //         target: LOG_TARGET,
-                //         "Output commitment({}) already in SMT",
-                //         output.commitment.to_hex(),
-                //     );
-                //     return Err(e.into());
-                // }
+
                 batch.push((smt_key, Some(smt_node)));
             }
 
@@ -1383,19 +1379,6 @@ impl LMDBDatabase {
                     .expect("Key hash is always 32 bytes"),
             );
             batch.push((smt_key, None));
-            // if can_we_change_smt {
-            //     match output_smt.delete(&smt_key)? {
-            //         DeleteResult::Deleted(_value_hash) => {},
-            //         DeleteResult::KeyNotFound => {
-            //             error!(
-            //                 target: LOG_TARGET,
-            //                 "Could not find input({}) in SMT",
-            //                 input_with_output_data.commitment()?.to_hex(),
-            //             );
-            //             return Err(ChainStorageError::UnspendableInput);
-            //         },
-            //     };
-            // }
 
             let features = input_with_output_data.features()?;
             if let Some(vn_reg) = features
@@ -1427,28 +1410,30 @@ impl LMDBDatabase {
         let (root, ops) = output_smt
             .put_value_set(batch, header.height)
             .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
-        let smt_writer = LmdbTreeWriter::new(
-            txn,
-            self.jmt_node_data.clone(),
-            LMDB_DB_JMT_NODE_DATA,
-            self.jmt_value_data.clone(),
-            LMDB_DB_JMT_VALUE_DATA,
-        );
 
         if header.output_mr.as_slice() != root.0.as_slice() {
             warn!(
                 target: LOG_TARGET,
-                "The output merkle root in the header does not match the calculated root. Header: {}, calculated: {}",
+                "The output merkle root in the header at height {} does not match the calculated root. Header: {}, calculated: {}",
+                header.height,
                 header.output_mr.to_hex(),
                 root.0.to_hex()
             );
             return Err(ChainStorageError::InvalidOperation(format!(
-                "The output merkle root in the header does not match the calculated root. Header: {}, calculated:
+                "The output merkle root in the header at height {} does not match the calculated root. Header: {}, \
+                 calculated:
             {}",
+                header.height,
                 header.output_mr.to_hex(),
                 root.0.to_hex()
             )));
         }
+        let smt_writer = LmdbTreeWriter::new(
+            txn,
+            self.jmt_node_data.clone(),
+            self.jmt_value_data.clone(),
+            self.jmt_unique_key_data.clone(),
+        );
         smt_writer
             .write_node_batch(&ops.node_batch)
             .map_err(ChainStorageError::JellyfishMerkleTreeError)?;
@@ -1625,7 +1610,7 @@ impl LMDBDatabase {
         let inputs =
             lmdb_fetch_matching_after::<TransactionInputRowData>(write_txn, &self.inputs_db, block_hash.as_slice())?;
 
-        for input_data in inputs {
+        for (_input_key, input_data) in inputs {
             let input = input_data.input;
             // From 'utxo_commitment_index::utxo_commitment_index'
             if let SpentOutput::OutputData { commitment, .. } = input.spent_output.clone() {
@@ -1853,6 +1838,22 @@ impl LMDBDatabase {
 
     fn get_consensus_constants(&self, height: u64) -> &ConsensusConstants {
         self.consensus_manager.consensus_constants(height)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_write_txn(&self) -> WriteTransaction<'_> {
+        self.write_transaction().expect("Failed to create write transaction")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_lmdb_tree_writer<'a: 'b, 'b>(&self, txn: &'a WriteTransaction<'b>) -> LmdbTreeWriter<'a> {
+        let res = LmdbTreeWriter::new(
+            &txn,
+            self.jmt_node_data.clone(),
+            self.jmt_value_data.clone(),
+            self.jmt_unique_key_data.clone(),
+        );
+        res
     }
 }
 
@@ -2155,7 +2156,7 @@ impl BlockchainBackend for LMDBDatabase {
         let txn = self.read_transaction()?;
         Ok(lmdb_fetch_matching_after(&txn, &self.kernels_db, header_hash.deref())?
             .into_iter()
-            .map(|f: TransactionKernelRowData| f.kernel)
+            .map(|(_, f): (Vec<u8>, TransactionKernelRowData)| f.kernel)
             .collect())
     }
 
@@ -2205,7 +2206,7 @@ impl BlockchainBackend for LMDBDatabase {
         let mut outputs: Vec<(TransactionOutput, bool)> =
             lmdb_fetch_matching_after::<TransactionOutputRowData>(&txn, &self.utxos_db, header_hash.deref())?
                 .into_iter()
-                .map(|row| (row.output, false))
+                .map(|(_, row)| (row.output, false))
                 .collect();
         if let Some(header_hash) = spend_status_at_header {
             let header_height =
@@ -2258,7 +2259,11 @@ impl BlockchainBackend for LMDBDatabase {
 
     fn fetch_outputs_in_block(&self, header_hash: &HashOutput) -> Result<Vec<TransactionOutput>, ChainStorageError> {
         let txn = self.read_transaction()?;
-        lmdb_fetch_matching_after(&txn, &self.utxos_db, header_hash.as_slice())
+        lmdb_fetch_matching_after(&txn, &self.utxos_db, header_hash.as_slice()).map(|rows| {
+            rows.into_iter()
+                .map(|(_, row): (Vec<u8>, TransactionOutputRowData)| row.output)
+                .collect()
+        })
     }
 
     fn fetch_inputs_in_block(
@@ -2269,7 +2274,7 @@ impl BlockchainBackend for LMDBDatabase {
         Ok(
             lmdb_fetch_matching_after(&txn, &self.inputs_db, previous_header_hash.as_slice())?
                 .into_iter()
-                .map(|f: TransactionInputRowData| f.input)
+                .map(|(_, f): (_, TransactionInputRowData)| f.input)
                 .collect(),
         )
     }
