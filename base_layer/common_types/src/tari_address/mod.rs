@@ -44,7 +44,7 @@ use crate::{
 pub const TARI_ADDRESS_INTERNAL_DUAL_SIZE: usize = 67; // number of bytes used for the internal representation
 pub const TARI_ADDRESS_INTERNAL_SINGLE_SIZE: usize = 35; // number of bytes used for the internal representation
 const INTERNAL_DUAL_BASE58_MIN_SIZE: usize = 89; // number of bytes used for the internal representation
-const INTERNAL_DUAL_BASE58_MAX_SIZE: usize = 91; // number of bytes used for the internal representation
+const INTERNAL_DUAL_BASE58_MAX_SIZE: usize = 443; // number of bytes used for the internal representation
 const INTERNAL_SINGLE_MIN_BASE58_SIZE: usize = 45; // number of bytes used for the internal representation
 const INTERNAL_SINGLE_MAX_BASE58_SIZE: usize = 48; // number of bytes used for the internal representation
 const MAX_ENCRYPTED_DATA_SIZE: usize = 256; // max size of the payment_id_ bytes
@@ -128,6 +128,8 @@ pub enum TariAddressError {
     CreationError(String),
     #[error("Too large payment_id")]
     PaymentIdTooLarge,
+    #[error("Payment_id not supported on single addresses")]
+    PaymentIdNotSupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,13 +161,9 @@ impl TariAddress {
         spend_key: CompressedPublicKey,
         network: Network,
         features: TariAddressFeatures,
-        payment_id_user_data: Option<Vec<u8>>,
     ) -> Result<TariAddress, TariAddressError> {
         Ok(TariAddress::Single(Box::new(SingleAddress::new(
-            spend_key,
-            network,
-            features,
-            payment_id_user_data,
+            spend_key, network, features,
         )?)))
     }
 
@@ -223,7 +221,6 @@ impl TariAddress {
                 one.public_spend_key().clone(),
                 one.network(),
                 one.features().combine_features(two.features()),
-                None,
             ),
         }
     }
@@ -231,7 +228,13 @@ impl TariAddress {
     /// Gets the bytes size of the Tari Address
     pub fn get_size(&self) -> usize {
         match self {
-            TariAddress::Dual(_) => TARI_ADDRESS_INTERNAL_DUAL_SIZE,
+            TariAddress::Dual(v) => {
+                if v.features().contains(TariAddressFeatures::PAYMENT_ID) {
+                    v.to_vec().len()
+                } else {
+                    TARI_ADDRESS_INTERNAL_DUAL_SIZE
+                }
+            },
             TariAddress::Single(_) => TARI_ADDRESS_INTERNAL_SINGLE_SIZE,
         }
     }
@@ -239,7 +242,7 @@ impl TariAddress {
     pub fn get_payment_id_bytes(&self) -> Vec<u8> {
         match self {
             TariAddress::Dual(v) => v.get_payment_id_bytes(),
-            TariAddress::Single(v) => v.get_payment_id_bytes(),
+            TariAddress::Single(_) => vec![],
         }
     }
 
@@ -250,11 +253,7 @@ impl TariAddress {
                 address.add_payment_id(data)?;
                 Ok(TariAddress::Dual(address))
             },
-            TariAddress::Single(v) => {
-                let mut address = v.clone();
-                address.add_payment_id(data)?;
-                Ok(TariAddress::Single(address))
-            },
+            TariAddress::Single(_) => Err(TariAddressError::PaymentIdNotSupported),
         }
     }
 
@@ -337,7 +336,10 @@ impl TariAddress {
     /// Construct Tari Address from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<TariAddress, TariAddressError>
     where Self: Sized {
-        if !(bytes.len() == TARI_ADDRESS_INTERNAL_SINGLE_SIZE || bytes.len() == TARI_ADDRESS_INTERNAL_DUAL_SIZE) {
+        if !(bytes.len() == TARI_ADDRESS_INTERNAL_SINGLE_SIZE ||
+            (bytes.len() >= TARI_ADDRESS_INTERNAL_DUAL_SIZE &&
+                bytes.len() <= (TARI_ADDRESS_INTERNAL_DUAL_SIZE + MAX_ENCRYPTED_DATA_SIZE)))
+        {
             return Err(TariAddressError::InvalidSize);
         }
         if bytes.len() == TARI_ADDRESS_INTERNAL_SINGLE_SIZE {
@@ -356,12 +358,14 @@ impl TariAddress {
     }
 
     /// Construct Tari Address from hex
-    pub fn from_base58(hex_str: &str) -> Result<TariAddress, TariAddressError> {
-        if hex_str.len() < INTERNAL_SINGLE_MIN_BASE58_SIZE {
+    pub fn from_base58(bas58_str: &str) -> Result<TariAddress, TariAddressError> {
+        if bas58_str.len() < INTERNAL_SINGLE_MIN_BASE58_SIZE {
             return Err(TariAddressError::InvalidSize);
         }
 
-        let (first, rest) = hex_str.split_at_checked(2).ok_or(TariAddressError::InvalidCharacter)?;
+        let (first, rest) = bas58_str
+            .split_at_checked(2)
+            .ok_or(TariAddressError::InvalidCharacter)?;
         let (network, features) = first.split_at_checked(1).ok_or(TariAddressError::InvalidCharacter)?;
         let mut result = bs58::decode(network)
             .into_vec()
@@ -374,6 +378,7 @@ impl TariAddress {
             .map_err(|_| TariAddressError::CannotRecoverPublicKey)?;
         result.append(&mut features);
         result.append(&mut rest);
+
         Self::from_bytes(result.as_slice())
     }
 
@@ -534,7 +539,6 @@ mod test {
             public_key.clone(),
             Network::Esmeralda,
             TariAddressFeatures::create_interactive_only(),
-            None,
         )
         .unwrap();
         assert_eq!(emoji_id_from_public_key.public_spend_key(), &public_key);
@@ -561,7 +565,6 @@ mod test {
             public_key.clone(),
             Network::Esmeralda,
             TariAddressFeatures::create_one_sided_only(),
-            None,
         )
         .unwrap();
         assert_eq!(emoji_id_from_public_key.public_spend_key(), &public_key);
@@ -732,7 +735,6 @@ mod test {
             public_key.clone(),
             Network::Esmeralda,
             TariAddressFeatures::create_interactive_only(),
-            None,
         )
         .unwrap();
 
@@ -778,7 +780,6 @@ mod test {
             public_key.clone(),
             Network::Esmeralda,
             TariAddressFeatures::create_one_sided_only(),
-            None,
         )
         .unwrap();
 
