@@ -1182,7 +1182,7 @@ message GetStateResponse {
 // Response message for GetUnspentAmounts RPC.
 message GetUnspentAmountsResponse {
   // Total value of all unspent outputs, in the smallest unit (e.g., microTari).
-  uint64 amount = 1;
+  repeated uint64 amount = 1;
 }
 
 // Request message for the CoinSplit RPC.
