@@ -112,7 +112,7 @@ impl TreeWriter for LmdbTreeWriter<'_> {
             match (value, &latest_value) {
                 (None, _) => {
                     if latest_value.is_none() {
-                        warn!(target: LOG_TARGET, "Found no existing JMT unique key for version {}, creating it as None", value_key.0);
+                        trace!(target: LOG_TARGET, "Found no existing JMT unique key for version {}, creating it as None", value_key.0);
                     }
                     let mut lmdb_key: Vec<u8> = vec![];
                     lmdb_key.extend_from_slice(value_key.1 .0.as_slice());
@@ -122,7 +122,7 @@ impl TreeWriter for LmdbTreeWriter<'_> {
                     // .0.to_hex(), value_key.0);
                 },
                 (Some(_v), Some(_x)) => {
-                    warn!(target: LOG_TARGET, "Found existing unique key {} for version {}", value_key.1 .0.to_hex(), value_key.0);
+                    trace!(target: LOG_TARGET, "Found existing unique key {} for version {}", value_key.1 .0.to_hex(), value_key.0);
                     return Err(anyhow::anyhow!("Duplicate value key found in batch"));
                 },
                 // (None, None) => {
