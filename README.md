@@ -41,8 +41,6 @@ Then run the tests with:
 cargo +nightly ci-test
 ```
 
-
-
 ### Download
 
 [Download binaries](https://tari.com/downloads/) from [tari.com](https://www.tari.com/). This is the easiest way to run a Tari node, but you're
@@ -148,69 +146,7 @@ sudo apt-get install -y powershell
 
 #### (Windows)
 
-First you'll need to make sure you have a full development environment set up:
-
-- LLVM
-
-  - https://releases.llvm.org/
-  - Create a `LIBCLANG_PATH` environment variable pointing to the LLVM lib path, e.g.
-    ```
-    setx LIBCLANG_PATH "C:\Program Files\LLVM\lib"
-    ```
-
-- Build Tools
-
-  - [CMake](https://cmake.org/download/) (Used for RandomX)
-
-  - Either:
-
-    - Microsoft Visual Studio Version 2019 or later
-      - C++ CMake tools for Windows
-      - MSVC build tools (latest version for your platform ARM, ARM64 or x64.x86)
-      - Spectre-mitigated libs (latest version for your platform ARM, ARM64 or x64.x86)
-
-    or
-
-    - [Build Tools for Visual Studio 2019](https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=BuildTools&rel=16)
-
-- OpenSSL:
-
-  - install `vcpkg`
-  - install static openssl `vcpkg install openssl:x64-windows-static`
-  - set env var: `OPENSSL_DIR=C:\vcpkg\packages\openssl_x64-windows-static`, replace `C:\vcpkg` with the root where you installed vcpkg
-
-- [Protocol Buffers](https://protobuf.dev/)
-  - Install from https://github.com/protocolbuffers/protobuf#protobuf-compiler-installation or if you using [The Package Manager for Windows](https://chocolatey.org/), run ```choco upgrade protoc -y```
-
-- Tor
-  - Download [Tor Windows Expert Bundle](https://www.torproject.org/download/tor/)
-  - Extract to local path, e.g. `C:\Program Files (x86)\Tor Services`
-  - Ensure the directory containing the Tor executable, e.g. `C:\Program Files (x86)\Tor Services\Tor`, is in the path
-
-#### Install Rust (\*nix)
-
-You can follow along at [The Rust Website](https://www.rust-lang.org/tools/install) or just follow these steps to get
-Rust installed on your machine:
-
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-Then make sure that `cargo` has been added to your path:
-
-    export PATH="$HOME/.cargo/bin:$PATH"
-
-#### Install Rust (Windows 10)
-
-Follow the installation process for Windows at [The Rust Website](https://www.rust-lang.org/tools/install). Then make
-sure that `cargo` and `rustc` have been added to your path:
-
-    cargo --version
-    rustc --version
-
-### Checkout the source code
-
-In your directory of choice (_e.g._ `%USERPROFILE%\Code` on Windows), clone the Tari repo:
-
-    git clone https://github.com/tari-project/tari.git
+Please follow the instructions [located here](https://github.com/tari-project/tari/blob/development/buildtools/windows-dev-environment-notes.md) for instructions on setting up your build environment in Windows.
 
 ### Build
 
