@@ -23,8 +23,9 @@
 use thiserror::Error;
 
 use crate::{connection_manager::ConnectionManagerError, peer_manager::PeerManagerError, PeerConnectionError};
+
 /// Errors for the Connectivity actor.
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error)]
 pub enum ConnectivityError {
     #[error("Cannot send request because ConnectivityActor disconnected")]
     ActorDisconnected,
@@ -33,7 +34,7 @@ pub enum ConnectivityError {
     #[error("PeerManagerError: {0}")]
     PeerManagerError(#[from] PeerManagerError),
     #[error("Peer connection error: {0}")]
-    PeerConnectionError(String),
+    PeerConnectionError(#[from] PeerConnectionError),
     #[error("ConnectionFailed: {0}")]
     ConnectionFailed(ConnectionManagerError),
     #[error("Connectivity event stream closed unexpectedly")]
@@ -44,8 +45,6 @@ pub enum ConnectivityError {
     DialCancelled,
     #[error("Client cancelled: '{0}'")]
     ClientCancelled(String),
-    #[error("Connection limit reached ({current}/{max} connections)")]
-    ConnectionLimitReached { current: usize, max: usize },
 }
 
 impl From<ConnectionManagerError> for ConnectivityError {
@@ -54,11 +53,5 @@ impl From<ConnectionManagerError> for ConnectivityError {
             ConnectionManagerError::DialCancelled => Self::DialCancelled,
             err => Self::ConnectionFailed(err),
         }
-    }
-}
-
-impl From<PeerConnectionError> for ConnectivityError {
-    fn from(err: PeerConnectionError) -> Self {
-        Self::PeerConnectionError(err.to_string())
     }
 }
