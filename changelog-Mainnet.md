@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.1.1(https://github.com/tari-project/tari/compare/v2.1.0...v2.1.1) (2025-05-09)
+
+### Bug Fixes
+
+* Revert connection pool cycling
+
 ## [2.1.0](https://github.com/tari-project/tari/compare/v2.0.1...v2.1.0) (2025-05-09)
 
 
