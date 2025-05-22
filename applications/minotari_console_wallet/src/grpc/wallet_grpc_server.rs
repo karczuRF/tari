@@ -65,6 +65,8 @@ use minotari_app_grpc::tari_rpc::{
     GetUnspentAmountsResponse,
     GetVersionRequest,
     GetVersionResponse,
+    ImportTransactionsRequest,
+    ImportTransactionsResponse,
     ImportUtxosRequest,
     ImportUtxosResponse,
     RegisterValidatorNodeRequest,
@@ -1250,6 +1252,28 @@ impl wallet_server::Wallet for WalletGrpcServer {
             },
         };
         Ok(Response::new(response))
+    }
+
+    async fn import_transactions(
+        &self,
+        request: Request<ImportTransactionsRequest>,
+    ) -> Result<Response<ImportTransactionsResponse>, Status> {
+        let request = request.into_inner();
+        let txs: Vec<WalletTransaction> = serde_json::from_str(&request.txs)
+            .map_err(|_| Status::invalid_argument("Could not parse transactions. Use valid JSON format."))?;
+        info!(target: LOG_TARGET, "Importing {:?} transactions", txs.len());
+
+        let mut transaction_service = self.get_transaction_service();
+        let mut tx_ids = Vec::new();
+        for tx in txs {
+            match transaction_service.import_transaction(tx).await {
+                Ok(id) => {
+                    tx_ids.push(id.into());
+                },
+                Err(e) => eprintln!("Could not import tx {}", e),
+            };
+        }
+        Ok(Response::new(ImportTransactionsResponse { tx_ids }))
     }
 }
 
