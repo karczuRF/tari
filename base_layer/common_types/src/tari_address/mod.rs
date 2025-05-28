@@ -98,6 +98,9 @@ impl fmt::Display for TariAddressFeatures {
         if self.contains(TariAddressFeatures::ONE_SIDED) {
             write!(f, "One-sided,")?;
         }
+        if self.contains(TariAddressFeatures::PAYMENT_ID) {
+            write!(f, "Payment-id,")?;
+        }
         Ok(())
     }
 }
