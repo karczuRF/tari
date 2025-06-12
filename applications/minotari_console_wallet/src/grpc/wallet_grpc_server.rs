@@ -1183,6 +1183,7 @@ impl wallet_server::Wallet for WalletGrpcServer {
         Ok(Response::new(receiver))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn get_all_completed_transactions(
         &self,
         request: Request<GetAllCompletedTransactionsRequest>,
@@ -1229,7 +1230,12 @@ impl wallet_server::Wallet for WalletGrpcServer {
             usize::MAX
         };
         let mut transactions: Vec<TransactionInfo> = Vec::new();
-        for txn in completed_transactions.into_iter().skip(offset).take(limit) {
+        for txn in completed_transactions
+            .into_iter()
+            .filter(|tx| req.status_bitflag == 0 || (req.status_bitflag & (1 << (tx.status.clone() as u32))) != 0)
+            .skip(offset)
+            .take(limit)
+        {
             let output_commitments: Vec<Vec<u8>> = txn
                 .transaction
                 .body
