@@ -102,6 +102,9 @@ service BaseNode {
     rpc GetNetworkState(GetNetworkStateRequest) returns (GetNetworkStateResponse);
     // PayRef (Payment Reference) lookup for block explorers and external services
     rpc SearchPaymentReferences(SearchPaymentReferencesRequest) returns (stream PaymentReferenceResponse);
+    // PayRef (Payment Reference) lookup for block explorers and external services via output hash
+    rpc SearchPaymentReferencesViaOutputHash(FetchMatchingUtxosRequest) returns (stream PaymentReferenceResponse);
+
 }
 
 message GetAssetMetadataRequest {
@@ -612,10 +615,14 @@ message PaymentReferenceResponse {
     bytes commitment = 5;
     // Whether this output has been spent
     bool is_spent = 6;
-    // Height where output was spent (if spent)
+    // Height where output was spent - will be 0 for unspent outputs as it is not applicable
     uint64 spent_height = 7;
-    // Block hash where output was spent (if spent)
+    // Block hash where output was spent - will be empty for unspent outputs
     bytes spent_block_hash = 8;
-    // Transaction output amount will be 0 for non set a
+    // Minimum value promise
     uint64 min_value_promise = 9;
+    // Timestamp when the output was spent - will be 0 for unspent outputs as it is not applicable
+    uint64 spent_timestamp = 10;
+    // Output hash of the output
+    bytes output_hash = 11;
 }
