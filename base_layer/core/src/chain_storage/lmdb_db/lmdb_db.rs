@@ -19,6 +19,68 @@
 // SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 // USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+//! # LMDB Database with Integrated Stats Collection
+//!
+//! This module provides an LMDB-based blockchain database with built-in statistics collection
+//! for monitoring database operations and migrations.
+//!
+//! ## Stats Collection
+//!
+//! Every `LMDBDatabase` instance automatically includes a `StatsCollector` that tracks:
+//! - Migration progress during database creation
+//! - Operation statistics (operations per second, progress percentage)
+//! - Real-time updates via tokio watch channels
+//!
+//! ## Usage Example
+//!
+//! ```no_run
+//! # use std::path::Path;
+//! # use tokio::sync::watch;
+//! # use tari_storage::lmdb_store::LMDBConfig;
+//! # use crate::consensus::ConsensusManager;
+//! # use crate::chain_storage::lmdb_db::stats_collector::DatabaseStats;
+//! // Create database with automatic stats collection
+//! let db = create_lmdb_database(
+//!     Path::new("./test_db"),
+//!     LMDBConfig::default(),
+//!     ConsensusManager::default(),
+//! )?;
+//!
+//! // Access the stats collector
+//! let stats_collector = db.stats_collector();
+//!
+//! // Subscribe to progress updates
+//! let progress_receiver = stats_collector.subscribe();
+//!
+//! // Subscribe additional receivers for different consumers
+//! let ui_receiver = stats_collector.subscribe_sender();
+//! let logging_receiver = stats_collector.subscribe_sender();
+//!
+//! // Check current progress
+//! let current_progress = stats_collector.progress_percentage();
+//! let ops_per_second = stats_collector.operations_per_second();
+//! println!(
+//!     "Progress: {:.1}%, Ops/sec: {:.2}",
+//!     current_progress, ops_per_second
+//! );
+//!
+//! // Alternative: Create database with external stats channel
+//! let (stats_sender, mut stats_receiver) = watch::channel(DatabaseStats::default());
+//! let db_with_channel = create_lmdb_database_with_stats_channel(
+//!     Path::new("./test_db_with_channel"),
+//!     LMDBConfig::default(),
+//!     ConsensusManager::default(),
+//!     Some(stats_sender),
+//! )?;
+//!
+//! // The stats_receiver will automatically receive updates from the database
+//! // as operations are performed
+//! ```
+//!
+//! The stats collector is automatically updated during:
+//! - Database migrations
+//! - Metadata updates
 use std::{
     cmp::max,
     convert::TryFrom,
@@ -57,12 +119,14 @@ use tari_utilities::{
     hex::{to_hex, Hex},
     ByteArray,
 };
+use tokio::sync::watch;
 
 use super::{
     cursors::KeyPrefixCursor,
     lmdb::lmdb_get_prefix_cursor,
     lmdb_tree_reader::{LmdbTreeReader, OwnedLmdbTreeReader},
     lmdb_tree_writer::LmdbTreeWriter,
+    stats_collector::{DatabaseStats, LMDBStatsCollector},
 };
 use crate::{
     blocks::{
@@ -178,12 +242,8 @@ const LMDB_DB_JMT_UNIQUE_KEY_DATA: &str = "jmt_unique_key_data";
 type KernelKey = CompositeKey<72>;
 /// Height(8), Hash(32)
 type ValidatorNodeRegistrationKey = CompositeKey<40>;
-
-pub fn create_lmdb_database<P: AsRef<Path>>(
-    path: P,
-    config: LMDBConfig,
-    consensus_manager: ConsensusManager,
-) -> Result<LMDBDatabase, ChainStorageError> {
+/// Core database creation logic shared between public functions
+fn build_lmdb_store<P: AsRef<Path>>(path: P, config: LMDBConfig) -> Result<(LMDBStore, File), ChainStorageError> {
     let flags = db::CREATE;
     debug!(target: LOG_TARGET, "Creating LMDB database at {:?}", path.as_ref());
     fs::create_dir_all(&path)?;
@@ -231,9 +291,28 @@ pub fn create_lmdb_database<P: AsRef<Path>>(
         .build()
         .map_err(|err| ChainStorageError::CriticalError(format!("Could not create LMDB store:{}", err)))?;
     debug!(target: LOG_TARGET, "LMDB database creation successful");
-    LMDBDatabase::new(&lmdb_store, file_lock, consensus_manager)
+
+    Ok((lmdb_store, file_lock))
 }
 
+pub fn create_lmdb_database<P: AsRef<Path>>(
+    path: P,
+    config: LMDBConfig,
+    consensus_manager: ConsensusManager,
+) -> Result<LMDBDatabase, ChainStorageError> {
+    let (lmdb_store, file_lock) = build_lmdb_store(path, config)?;
+    LMDBDatabase::new(&lmdb_store, file_lock, consensus_manager, None)
+}
+
+pub fn create_lmdb_database_with_stats_channel<P: AsRef<Path>>(
+    path: P,
+    config: LMDBConfig,
+    consensus_manager: ConsensusManager,
+    stats_sender: Option<watch::Sender<DatabaseStats>>,
+) -> Result<LMDBDatabase, ChainStorageError> {
+    let (lmdb_store, file_lock) = build_lmdb_store(path, config)?;
+    LMDBDatabase::new(&lmdb_store, file_lock, consensus_manager, stats_sender)
+}
 /// This is a lmdb-based blockchain database for persistent storage of the chain state.
 pub struct LMDBDatabase {
     env: Arc<Environment>,
@@ -301,6 +380,7 @@ pub struct LMDBDatabase {
     jmt_unique_key_data: DatabaseRef,
     _file_lock: Arc<File>,
     consensus_manager: ConsensusManager,
+    stats_collector: LMDBStatsCollector,
 }
 
 impl LMDBDatabase {
@@ -308,6 +388,7 @@ impl LMDBDatabase {
         store: &LMDBStore,
         file_lock: File,
         consensus_manager: ConsensusManager,
+        stats_sender: Option<watch::Sender<DatabaseStats>>,
     ) -> Result<Self, ChainStorageError> {
         let env = store.env();
         let mut db = Self {
@@ -347,11 +428,22 @@ impl LMDBDatabase {
             env_config: store.env_config(),
             _file_lock: Arc::new(file_lock),
             consensus_manager,
+            stats_collector: LMDBStatsCollector::new(),
         };
+
+        // If a stats sender was provided, add it to the collector
+        if let Some(sender) = stats_sender {
+            db.stats_collector.add_sender(sender);
+        }
 
         run_migrations(&mut db)?;
 
         Ok(db)
+    }
+
+    /// Get a reference to the stats collector
+    pub fn stats_collector(&self) -> &LMDBStatsCollector {
+        &self.stats_collector
     }
 
     /// Try to establish a read lock on the LMDB database. If an exclusive write lock has been previously acquired, this
@@ -784,6 +876,7 @@ impl LMDBDatabase {
         v: &MetadataValue,
     ) -> Result<(), ChainStorageError> {
         lmdb_replace(txn, &self.metadata_db, &k.as_u32(), v, None)?;
+        self.stats_collector.update_metadata(k, v);
         Ok(())
     }
 
@@ -2782,6 +2875,14 @@ impl BlockchainBackend for LMDBDatabase {
         }
         Ok(result)
     }
+
+    fn set_stats_total_height(&self, total: u64) {
+        self.stats_collector.set_total_height(total);
+    }
+
+    fn update_stats_progress(&self, current: u64) {
+        self.stats_collector.update_migration_progress(current);
+    }
 }
 
 // Fetch the chain metadata
@@ -2897,8 +2998,8 @@ fn get_database(store: &LMDBStore, name: &str) -> Result<DatabaseRef, ChainStora
     Ok(handle.db())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-enum MetadataKey {
+#[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
+pub enum MetadataKey {
     ChainHeight,
     BestBlock,
     AccumulatedWork,
@@ -2932,8 +3033,8 @@ impl fmt::Display for MetadataKey {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Deserialize, Serialize)]
-enum MetadataValue {
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub enum MetadataValue {
     ChainHeight(u64),
     BestBlock(BlockHash),
     AccumulatedWork(U512),
@@ -2962,6 +3063,7 @@ impl fmt::Display for MetadataValue {
 #[allow(clippy::too_many_lines)]
 fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
     const MIGRATION_VERSION: u64 = 5;
+    db.stats_collector().set_target_db_version(MIGRATION_VERSION);
     let txn = db.read_transaction()?;
     let k = MetadataKey::MigrationVersion;
     let val = lmdb_get::<_, MetadataValue>(&txn, &db.metadata_db, &k.as_u32())?;
@@ -2979,6 +3081,7 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
     let mut payref_index_done = false;
 
     for migrate_from_version in last_migrated_version..MIGRATION_VERSION {
+        db.stats_collector().set_current_db_version(migrate_from_version);
         unsafe {
             LMDBStore::resize_if_required(&db.env, &db.env_config, None)?;
         }
@@ -3024,7 +3127,10 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
                     migrate_from_version
                 );
             }
+
             let txn = db.write_transaction()?;
+
+            db.set_stats_total_height(chain_height);
             for height in 0..=chain_height {
                 let block_accum_data: V0BLockHeaderAccumulatedData =
                     lmdb_get(&txn, &db.header_accumulated_data_db, &height)?.ok_or_else(|| {
@@ -3052,6 +3158,11 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
                     &new_block_accum_data,
                     None,
                 )?;
+
+                // Update stats progress
+                if height % 50 == 0 {
+                    db.update_stats_progress(height);
+                }
             }
             txn.commit()?;
             let txn = db.write_transaction()?;
@@ -3167,6 +3278,7 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
             };
             drop(read_txn);
 
+            db.set_stats_total_height(chain_height);
             for height in 0..=chain_height {
                 // The average size added to the db per block for payrefs for the first 16,500 blocks was approximately
                 // 4,209 bytes as measured on a mainnet node and for the next 17,500 blocks approximately 7,550 bytes.
@@ -3183,6 +3295,9 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
                     }
                 }
                 process_payref_for_height(db, height)?;
+                if height % 50 == 0 {
+                    db.update_stats_progress(height);
+                }
             }
 
             payref_index_done = true;
@@ -3207,7 +3322,6 @@ fn run_migrations(db: &mut LMDBDatabase) -> Result<(), ChainStorageError> {
             txn.commit()?;
         }
     }
-
     Ok(())
 }
 

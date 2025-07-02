@@ -1820,7 +1820,6 @@ pub(crate) fn rewind_to_height<T: BlockchainBackend>(
     target_height: u64,
 ) -> Result<Vec<Arc<ChainBlock>>, ChainStorageError> {
     let last_header = db.fetch_last_header()?;
-
     // Delete headers
     let last_header_height = last_header.height;
     let metadata = db.fetch_chain_metadata()?;
@@ -1881,7 +1880,12 @@ pub(crate) fn rewind_to_height<T: BlockchainBackend>(
         );
         steps_back = effective_pruning_horizon;
     }
+
+    db.set_stats_total_height(steps_back);
     for h in 0..steps_back {
+        if h % 50 == 0 {
+            db.update_stats_progress(h);
+        }
         let mut txn = DbTransaction::new();
         info!(target: LOG_TARGET, "Deleting block {}", last_block_height - h,);
         let block = fetch_block(db, last_block_height - h, false)?;

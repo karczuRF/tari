@@ -27,13 +27,19 @@ use std::{
 };
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use chrono::Utc;
 use either::Either;
 use futures::{channel::mpsc, SinkExt};
 use log::*;
 use minotari_app_grpc::{
     conversions::transaction_output::grpc_output_with_payref,
-    tari_rpc,
-    tari_rpc::{CalcType, Sorting},
+    tari_rpc::{
+        self,
+        readiness_status::{State as ReadinessState, Status as ReadinessStatusEnum},
+        CalcType,
+        ReadinessStatus,
+        Sorting,
+    },
 };
 use minotari_app_utilities::consts;
 use tari_common_types::{
@@ -92,7 +98,6 @@ use crate::{
         data_cache::DataCache,
         hash_rate::HashRateMovingAverage,
         helpers::{mean, median},
-        readiness_grpc_server::ReadinessStatus,
     },
     grpc_method::GrpcMethod,
     BaseNodeConfig,
@@ -528,7 +533,10 @@ impl tari_rpc::base_node_server::BaseNode for BaseNodeGrpcServer {
             tari_randomx_estimated_hash_rate,
             num_connections: connected_peers.len() as u64,
             liveness_results: liveness,
-            readiness_status: ReadinessStatus::Ready.into(),
+            readiness_status: Some(ReadinessStatus {
+                status: Some(ReadinessStatusEnum::State(ReadinessState::Ready.into())),
+                timestamp: Utc::now().timestamp_millis() as u64,
+            }),
         };
         trace!(target: LOG_TARGET, "Sending GetNetworkState response to client");
         Ok(Response::new(response))
