@@ -217,7 +217,7 @@ where B: BlockchainBackend + 'static
                             target: LOG_TARGET,
                             "Could not provide requested block containing kernel with sig {} to peer because: {}",
                             sig_hex,
-                            e.to_string()
+                            e
                         ),
                     }
                 }
@@ -252,7 +252,7 @@ where B: BlockchainBackend + 'static
                             target: LOG_TARGET,
                             "Could not provide requested block with commitment {} to peer because: {}",
                             commitment_hex,
-                            e.to_string()
+                            e
                         ),
                     }
                 }
@@ -387,7 +387,7 @@ where B: BlockchainBackend + 'static
                             target: LOG_TARGET,
                             "Could not provide requested block {} to peer because: {}",
                             block_hex,
-                            e.to_string()
+                            e
                         );
 
                         None
@@ -413,7 +413,7 @@ where B: BlockchainBackend + 'static
                     Ok(Some((kernel, _))) => vec![kernel],
                     Ok(None) => vec![],
                     Err(err) => {
-                        error!(target: LOG_TARGET, "Could not fetch kernel {}", err.to_string());
+                        error!(target: LOG_TARGET, "Could not fetch kernel {}", err);
                         return Err(err.into());
                     },
                 };

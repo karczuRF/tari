@@ -63,7 +63,7 @@ use tokio::time::Instant;
 use zeroize::Zeroize;
 
 use crate::{
-    schema::{completed_transactions, inbound_transactions, outbound_transactions, payrefs},
+    schema::{completed_transactions, inbound_transactions, outbound_transactions, payrefs, scanned_blocks},
     storage::sqlite_utilities::wallet_db_connection::WalletDbConnection,
     transaction_service::{
         error::{TransactionKeyError, TransactionStorageError},
@@ -480,6 +480,29 @@ impl TransactionBackend for TransactionServiceSqliteDatabase {
         Ok(())
     }
 
+    fn get_last_scanned_height(&self) -> Result<Option<u64>, TransactionStorageError> {
+        let start = Instant::now();
+        let mut conn = self.database_connection.get_pooled_connection()?;
+        let acquire_lock = start.elapsed();
+
+        let result = scanned_blocks::table
+            .select(scanned_blocks::height)
+            .order(scanned_blocks::height.desc())
+            .first::<i64>(&mut conn)
+            .optional()?
+            .map(|h| h as u64);
+        if start.elapsed().as_millis() > 0 {
+            trace!(
+                target: LOG_TARGET,
+                "sqlite profile - get_last_scanned_height: lock {} + db_op {} = {} ms",
+                acquire_lock.as_millis(),
+                (start.elapsed() - acquire_lock).as_millis(),
+                start.elapsed().as_millis()
+            );
+        }
+        Ok(result)
+    }
+
     fn get_pending_transaction_counterparty_address_by_tx_id(
         &self,
         tx_id: TxId,
@@ -880,7 +903,7 @@ impl TransactionBackend for TransactionServiceSqliteDatabase {
         Ok(result)
     }
 
-    // This method returns completed but unconfirmed transactions that were not imported
+    /// This method returns completed but unconfirmed transactions that were not imported
     fn fetch_unconfirmed_transactions_info(&self) -> Result<Vec<UnconfirmedTransactionInfo>, TransactionStorageError> {
         let start = Instant::now();
         let mut conn = self.database_connection.get_pooled_connection()?;
@@ -2260,7 +2283,7 @@ impl CompletedTransactionSql {
             direction: Some(c.direction as i32),
             send_count: c.send_count as i32,
             last_send_timestamp: c.last_send_timestamp.map(|t| t.naive_utc()),
-            confirmations: c.confirmations.map(|ic| ic as i64),
+            confirmations: None, // To be removed in future
             mined_height: c.mined_height.map(|ic| ic as i64),
             mined_in_block: c.mined_in_block.map(|v| v.to_vec()),
             mined_timestamp: c.mined_timestamp.map(|t| t.naive_utc()),
@@ -2360,7 +2383,6 @@ impl CompletedTransaction {
             send_count: c.send_count as u32,
             last_send_timestamp: c.last_send_timestamp.map(|t| t.and_utc()),
             transaction_signature,
-            confirmations: c.confirmations.map(|ic| ic as u64),
             mined_height: c.mined_height.map(|ic| ic as u64),
             mined_in_block,
             mined_timestamp: c.mined_timestamp.map(|t| t.and_utc()),
@@ -2849,7 +2871,6 @@ mod test {
             received_output_hashes: vec![],
             change_output_hashes: vec![],
             transaction_signature: tx.first_kernel_excess_sig().unwrap_or(&Signature::default()).clone(),
-            confirmations: None,
             mined_height: None,
             mined_in_block: None,
             mined_timestamp: None,
@@ -2884,7 +2905,6 @@ mod test {
             received_output_hashes: vec![],
             change_output_hashes: vec![],
             transaction_signature: tx.first_kernel_excess_sig().unwrap_or(&Signature::default()).clone(),
-            confirmations: None,
             mined_height: None,
             mined_in_block: None,
             mined_timestamp: None,
@@ -3132,7 +3152,6 @@ mod test {
             received_output_hashes: vec![],
             change_output_hashes: vec![],
             transaction_signature: Signature::default(),
-            confirmations: None,
             mined_height: None,
             mined_in_block: None,
             mined_timestamp: None,
@@ -3273,7 +3292,6 @@ mod test {
                 received_output_hashes: vec![],
                 change_output_hashes: vec![],
                 transaction_signature: Signature::default(),
-                confirmations: None,
                 mined_height: None,
                 mined_in_block: None,
                 mined_timestamp: None,
@@ -3420,7 +3438,6 @@ mod test {
                 received_output_hashes: vec![],
                 change_output_hashes: vec![],
                 transaction_signature: Signature::default(),
-                confirmations: None,
                 mined_height: None,
                 mined_in_block: None,
                 mined_timestamp: None,

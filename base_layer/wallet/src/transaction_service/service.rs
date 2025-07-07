@@ -31,6 +31,7 @@ use chrono::{DateTime, Utc};
 use digest::Digest;
 use futures::{pin_mut, stream::FuturesUnordered, Stream, StreamExt};
 use log::*;
+use minotari_node_wallet_client::BaseNodeWalletClient;
 use rand::rngs::OsRng;
 use sha2::Sha256;
 use tari_common::configuration::Network;
@@ -59,9 +60,8 @@ use tari_comms_dht::outbound::OutboundMessageRequester;
 use tari_core::{
     consensus::ConsensusManager,
     covenants::Covenant,
-    mempool::FeePerGramStat,
     one_sided::{shared_secret_to_output_encryption_key, shared_secret_to_output_spending_key},
-    proto::{base_node as base_node_proto, base_node::FetchMatchingUtxos},
+    proto::base_node as base_node_proto,
     transactions::{
         tari_amount::MicroMinotari,
         transaction_components::{
@@ -123,7 +123,6 @@ use crate::{
         config::TransactionServiceConfig,
         error::{TransactionServiceError, TransactionServiceProtocolError, TransactionStorageError},
         handle::{
-            FeePerGramStatsResponse,
             PaymentDetails,
             TransactionEvent,
             TransactionEventSender,
@@ -132,6 +131,7 @@ use crate::{
         },
         offline_signing::{models::SignedOneSidedTransactionResult, offline_signer::OfflineSigner},
         protocols::{
+            check_faux_transaction_status::check_detected_transactions,
             check_transaction_size,
             transaction_broadcast_protocol::TransactionBroadcastProtocol,
             transaction_receive_protocol::{TransactionReceiveProtocol, TransactionReceiveProtocolStage},
@@ -147,7 +147,6 @@ use crate::{
             },
         },
         tasks::{
-            check_faux_transaction_status::check_detected_transactions,
             send_finalized_transaction::send_finalized_transaction_message,
             send_transaction_cancelled::send_transaction_cancelled_message,
             send_transaction_reply::send_transaction_reply,
@@ -209,7 +208,6 @@ pub struct TransactionService<
     timeout_update_watch: Watch<Duration>,
     wallet_db: WalletDatabase<TWalletBackend>,
     base_node_service: BaseNodeServiceHandle,
-    last_seen_tip_height: Option<u64>,
     validation_in_progress: Arc<Mutex<()>>,
     consensus_manager: ConsensusManager,
 }
@@ -338,7 +336,6 @@ where
             timeout_update_watch,
             base_node_service,
             wallet_db,
-            last_seen_tip_height: None,
             validation_in_progress: Arc::new(Mutex::new(())),
             consensus_manager,
         })
@@ -402,8 +399,8 @@ where
         > = FuturesUnordered::new();
 
         let mut base_node_service_event_stream = self.base_node_service.get_event_stream();
-        let mut output_manager_event_stream = self.resources.output_manager_service.get_event_stream();
         let mut utxo_scanner_events = self.resources.utxo_scanner_handle.get_event_receiver();
+        let mut output_manager_event_stream = self.resources.output_manager_service.get_event_stream();
 
         debug!(target: LOG_TARGET, "Transaction Service started");
         loop {
@@ -413,8 +410,8 @@ where
                         Ok(msg) => self.handle_output_manager_service_event(msg).await,
                         Err(e) => debug!(target: LOG_TARGET, "Lagging read on base node event broadcast channel: {}", e),
                     };
-                },
-                // Base Node Monitoring Service event
+                }
+               // Base Node Monitoring Service event
                 event = base_node_service_event_stream.recv() => {
                     match event {
                         Ok(msg) => self.handle_base_node_service_event(msg).await,
@@ -1107,10 +1104,6 @@ where
                 .start_transaction_validation_protocol(transaction_validation_join_handles)
                 .await
                 .map(TransactionServiceResponse::ValidationStarted),
-            TransactionServiceRequest::ReValidateTransactions => self
-                .start_transaction_revalidation(transaction_validation_join_handles)
-                .await
-                .map(TransactionServiceResponse::ValidationStarted),
             TransactionServiceRequest::ReValidateRejectedTransactions => self
                 .start_rejected_transaction_revalidation(transaction_validation_join_handles)
                 .await
@@ -1120,7 +1113,7 @@ where
                 self.handle_get_fee_per_gram_stats_per_block_request(count, reply_channel);
                 return Ok(());
             },
-            TransactionServiceRequest::GetPaymentByReference(payref) => self
+            TransactionServiceRequest::GetPaymentByReference { payref } => self
                 .get_payment_by_reference(payref)
                 .map(TransactionServiceResponse::PaymentDetails),
             TransactionServiceRequest::GetTransactionByPaymentReference(payref) => {
@@ -1144,32 +1137,18 @@ where
 
     fn handle_get_fee_per_gram_stats_per_block_request(
         &self,
-        count: usize,
+        count: u64,
         reply_channel: oneshot::Sender<Result<TransactionServiceResponse, TransactionServiceError>>,
     ) {
         let mut connectivity = self.resources.connectivity.clone();
 
         let query_base_node_fut = async move {
-            let mut client = connectivity
-                .obtain_base_node_wallet_rpc_client()
-                .await
-                .ok_or(TransactionServiceError::Shutdown)?;
+            let client = connectivity.obtain_base_node_wallet_rpc_client().await;
 
             let resp = client
-                .get_mempool_fee_per_gram_stats(base_node_proto::GetMempoolFeePerGramStatsRequest {
-                    count: count as u64,
-                })
-                .await?;
-            let mut resp = FeePerGramStatsResponse::from(resp);
-            // If there are no transactions in the mempool, populate with a minimal fee per gram.
-            if resp.stats.is_empty() {
-                resp.stats = vec![FeePerGramStat {
-                    order: 0,
-                    min_fee_per_gram: 1.into(),
-                    avg_fee_per_gram: 1.into(),
-                    max_fee_per_gram: 1.into(),
-                }]
-            }
+                .get_mempool_fee_per_gram_stats(count)
+                .await
+                .map_err(|e| TransactionServiceError::Other(e.to_string()))?;
             Ok(TransactionServiceResponse::FeePerGramStatsPerBlock(resp))
         };
 
@@ -1189,9 +1168,25 @@ where
             BaseNodeEvent::BaseNodeStateChanged(_state) => {
                 trace!(target: LOG_TARGET, "Received BaseNodeStateChanged event, but igoring",);
             },
-            BaseNodeEvent::NewBlockDetected(_hash, height) => {
-                self.last_seen_tip_height = Some(height);
-            },
+        }
+    }
+
+    async fn handle_output_manager_service_event(&mut self, event: Arc<OutputManagerEvent>) {
+        if let OutputManagerEvent::TxoValidationSuccess(_) = (*event).clone() {
+            let db = self.db.clone();
+            let output_manager_handle = self.resources.output_manager_service.clone();
+            let tip_height = self
+                .wallet_db
+                .get_last_scanned_height()
+                .unwrap_or_default()
+                .unwrap_or_default();
+            let event_publisher = self.event_publisher.clone();
+            tokio::spawn(check_detected_transactions(
+                output_manager_handle,
+                db,
+                event_publisher,
+                tip_height,
+            ));
         }
     }
 
@@ -1203,7 +1198,7 @@ where
         >,
     ) {
         match event {
-            UtxoScannerEvent::ConnectingToBaseNode(_node_id) => {},
+            UtxoScannerEvent::ConnectingToBaseNode => {},
             UtxoScannerEvent::ConnectedToBaseNode(_node_id, _duration) => {},
             UtxoScannerEvent::ConnectionFailedToBaseNode { .. } => {},
             UtxoScannerEvent::ScanningRoundFailed { .. } => {},
@@ -1218,25 +1213,6 @@ where
                     });
             },
             UtxoScannerEvent::ScanningFailed => {},
-        }
-    }
-
-    async fn handle_output_manager_service_event(&mut self, event: Arc<OutputManagerEvent>) {
-        if let OutputManagerEvent::TxoValidationSuccess(_) = (*event).clone() {
-            let db = self.db.clone();
-            let output_manager_handle = self.resources.output_manager_service.clone();
-            let metadata = self.wallet_db.get_chain_metadata().unwrap_or_default();
-            let tip_height = match metadata {
-                Some(val) => val.best_block_height(),
-                None => 0u64,
-            };
-            let event_publisher = self.event_publisher.clone();
-            tokio::spawn(check_detected_transactions(
-                output_manager_handle,
-                db,
-                event_publisher,
-                tip_height,
-            ));
         }
     }
 
@@ -1385,25 +1361,23 @@ where
         &mut self,
         hashes: Vec<HashOutput>,
     ) -> Result<Vec<TransactionOutput>, TransactionServiceError> {
-        // lets get the output from the blockchain
-        let req = FetchMatchingUtxos {
-            output_hashes: hashes.iter().map(|v| v.to_vec()).collect(),
-        };
-        let results: Vec<TransactionOutput> = self
-            .resources
-            .connectivity
-            .obtain_base_node_wallet_rpc_client()
-            .await
-            .ok_or_else(|| {
-                TransactionServiceError::ServiceError("Could not connect to base node rpc client".to_string())
-            })?
-            .fetch_matching_utxos(req)
-            .await?
-            .outputs
-            .into_iter()
-            .filter_map(|o| o.try_into().ok())
-            .collect();
-        Ok(results)
+        let mut res = vec![];
+        for hash in hashes {
+            match self
+                .resources
+                .connectivity
+                .obtain_base_node_wallet_rpc_client()
+                .await
+                .fetch_utxo(hash.to_vec())
+                .await
+                .map_err(|e| TransactionServiceError::Other(e.to_string()))?
+            {
+                Some(output) => res.push(output),
+                None => warn!(target: LOG_TARGET, "UTXO not found for hash: {}", hash),
+            }
+        }
+
+        Ok(res)
     }
 
     /// Creates an encumbered uninitialized transaction
@@ -1597,9 +1571,10 @@ where
         // Validate the aggregate signatures and script offset
         let factory = CommitmentFactory::default();
         let mut input_keys = UncompressedPublicKey::default();
+        let last_seen_tip_height = self.db.get_last_scanned_height()?.unwrap_or(0);
         for input in transaction.transaction.body.inputs() {
             let context = ScriptContext::new(
-                self.last_seen_tip_height.unwrap_or(0),
+                last_seen_tip_height,
                 &[0; 32],
                 input
                     .commitment()
@@ -1660,6 +1635,20 @@ where
         Ok(tx_id)
     }
 
+    async fn get_tip_height(&self) -> Result<u64, TransactionServiceError> {
+        self.resources
+            .connectivity
+            .clone()
+            .obtain_base_node_wallet_rpc_client()
+            .await
+            .get_tip_info()
+            .await
+            .map_err(|e| TransactionServiceError::Other(e.to_string()))?
+            .metadata
+            .map(|m| m.best_block_height())
+            .ok_or(TransactionServiceError::Other("Tip height not available".to_string()))
+    }
+
     /// broadcasts a SHA-XTR atomic swap transaction
     /// # Arguments
     /// 'dest_pubkey': The Comms pubkey of the recipient node
@@ -1684,7 +1673,9 @@ where
         let hash: [u8; 32] = Sha256::digest(pre_image.as_bytes()).into();
 
         // lets make the unlock height a day from now, 2 min blocks which gives us 30 blocks per hour * 24 hours
-        let tip_height = self.last_seen_tip_height.unwrap_or(0);
+
+        let tip_height = self.get_tip_height().await?;
+
         let height = tip_height + (24 * 30);
 
         // lets create the HTLC script
@@ -2095,7 +2086,7 @@ where
             .try_build(&self.resources.transaction_key_manager_service)
             .await?;
 
-        let tip_height = self.last_seen_tip_height.unwrap_or(0);
+        let tip_height = self.db.get_last_scanned_height()?.unwrap_or(0);
         let consensus_constants = self.consensus_manager.consensus_constants(tip_height);
         let sent_hashes = vec![output.hash(&self.resources.transaction_key_manager_service).await?];
 
@@ -2327,7 +2318,7 @@ where
             .try_build(&self.resources.transaction_key_manager_service)
             .await?;
 
-        let tip_height = self.last_seen_tip_height.unwrap_or(0);
+        let tip_height = self.db.get_last_scanned_height()?.unwrap_or(0);
         let consensus_constants = self.consensus_manager.consensus_constants(tip_height);
         let received_hashes = vec![output.hash(&self.resources.transaction_key_manager_service).await?];
 
@@ -2606,7 +2597,7 @@ where
             .try_build(&self.resources.transaction_key_manager_service)
             .await?;
 
-        let tip_height = self.last_seen_tip_height.unwrap_or(0);
+        let tip_height = self.db.get_last_scanned_height()?.unwrap_or(0);
         let consensus_constants = self.consensus_manager.consensus_constants(tip_height);
         let sent_hashes = vec![output.hash(&self.resources.transaction_key_manager_service).await?];
         let rtp = ReceiverTransactionProtocol::new(
@@ -3791,16 +3782,6 @@ where
         Ok(())
     }
 
-    async fn start_transaction_revalidation(
-        &mut self,
-        join_handles: &mut FuturesUnordered<
-            JoinHandle<Result<OperationId, TransactionServiceProtocolError<OperationId>>>,
-        >,
-    ) -> Result<OperationId, TransactionServiceError> {
-        self.resources.db.mark_all_non_coinbases_transactions_as_unvalidated()?;
-        self.start_transaction_validation_protocol(join_handles).await
-    }
-
     async fn start_rejected_transaction_revalidation(
         &mut self,
         join_handles: &mut FuturesUnordered<
@@ -3817,12 +3798,6 @@ where
             JoinHandle<Result<OperationId, TransactionServiceProtocolError<OperationId>>>,
         >,
     ) -> Result<OperationId, TransactionServiceError> {
-        let current_base_node = self
-            .resources
-            .connectivity
-            .get_current_base_node_peer_node_id()
-            .ok_or(TransactionServiceError::NoBaseNodeKeysProvided)?;
-
         trace!(target: LOG_TARGET, "Starting transaction validation protocol");
         let id = OperationId::new_random();
 
@@ -3835,7 +3810,6 @@ where
             self.resources.output_manager_service.clone(),
         );
 
-        let mut base_node_watch = self.connectivity().get_current_base_node_watcher();
         let validation_in_progress = self.validation_in_progress.clone();
 
         let mut utxo_scanner_service_event_stream = self.resources.utxo_scanner_handle.get_event_receiver();
@@ -3861,14 +3835,6 @@ where
                             if let Ok(UtxoScannerEvent::Completed{..}) = event {
                                 debug!(target: LOG_TARGET, "TXO Validation Protocol (Id: {}) resetting because base node height changed", id);
                                 continue 'outer;
-                            }
-                        }
-                        _ = base_node_watch.changed() => {
-                             if let Some(selected_peer) = base_node_watch.borrow().as_ref() {
-                                if selected_peer.get_current_peer().node_id != current_base_node {
-                                    debug!(target: LOG_TARGET, "Base node changed, restarting transaction validation protocol");
-                                  continue 'outer;
-                                }
                             }
                         }
                     }
@@ -3926,10 +3892,6 @@ where
         &mut self,
         broadcast_join_handles: &mut FuturesUnordered<JoinHandle<Result<TxId, TransactionServiceProtocolError<TxId>>>>,
     ) -> Result<(), TransactionServiceError> {
-        if !self.connectivity().is_base_node_set() {
-            return Err(TransactionServiceError::NoBaseNodeKeysProvided);
-        }
-
         trace!(target: LOG_TARGET, "Restarting transaction broadcast protocols");
         self.broadcast_completed_and_broadcast_transactions(broadcast_join_handles)
             .map_err(|resp| {
@@ -3958,10 +3920,6 @@ where
             completed_tx.transaction.body.kernels().is_empty()
         {
             return Err(TransactionServiceError::InvalidCompletedTransaction);
-        }
-
-        if !self.resources.connectivity.is_base_node_set() {
-            return Err(TransactionServiceError::NoBaseNodeKeysProvided);
         }
 
         // Check if the protocol has already been started
@@ -4261,10 +4219,6 @@ where
         }
     }
 
-    fn connectivity(&self) -> &TWalletConnectivity {
-        &self.resources.connectivity
-    }
-
     fn verify_send(
         &self,
         address: &TariAddress,
@@ -4291,6 +4245,7 @@ where
 
     /// Get payment details by PayRef
     fn get_payment_by_reference(&self, payref: FixedHash) -> Result<Option<PaymentDetails>, TransactionServiceError> {
+        let current_height = self.db.get_last_scanned_height()?.unwrap_or(0);
         let txn = match self.db.get_transaction_with_payref(&payref)? {
             Some(txn) => txn,
             None => return Ok(None), // No transaction found with the given PayRef
@@ -4306,11 +4261,6 @@ where
             None => return Ok(None), // This should not happen, but just in case
         };
 
-        let confirmations = match txn.confirmations {
-            Some(confirmations) => confirmations,
-            None => return Ok(None), // This should not happen, but just in case
-        };
-
         let payment_id_bytes = txn.payment_id.user_data_as_bytes();
 
         // Check if PayRef matches any sent output by generating proper PayRef
@@ -4323,7 +4273,7 @@ where
                     amount: txn.amount,
                     direction: txn.direction,
                     block_height: mined_height,
-                    confirmations,
+                    confirmations: current_height.saturating_sub(mined_height),
                     timestamp: Some(txn.timestamp),
                     payment_id: Some(payment_id_bytes),
                 }));
@@ -4340,7 +4290,7 @@ where
                     amount: txn.amount,
                     direction: txn.direction,
                     block_height: mined_height,
-                    confirmations,
+                    confirmations: current_height.saturating_sub(mined_height),
                     timestamp: Some(txn.timestamp),
                     payment_id: Some(payment_id_bytes),
                 }));
@@ -4357,7 +4307,7 @@ where
                     amount: txn.amount,
                     direction: txn.direction,
                     block_height: mined_height,
-                    confirmations,
+                    confirmations: current_height.saturating_sub(mined_height),
                     timestamp: Some(txn.timestamp),
                     payment_id: Some(payment_id_bytes),
                 }));

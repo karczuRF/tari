@@ -243,9 +243,9 @@ typedef struct P2pConfig TariCommsConfig;
 
 typedef struct Balance TariBalance;
 
-typedef struct FeePerGramStatsResponse TariFeePerGramStats;
-
 typedef struct FeePerGramStat TariFeePerGramStat;
+
+typedef struct FeePerGramStatsResponse TariFeePerGramStats;
 
 /**
  * Payment Record FFI Types
@@ -2559,23 +2559,6 @@ bool completed_transaction_is_outbound(TariCompletedTransaction *tx,
                                        int *error_out);
 
 /**
- * Gets the number of confirmations of a TariCompletedTransaction
- *
- * ## Arguments
- * `tx` - The TariCompletedTransaction
- * `error_out` - Pointer to an int which will be modified to an error code should one occur, may not be null. Functions
- * as an out parameter. Returns a 0 if any pointer argument is null.
- *
- * ## Returns
- * `c_ulonglong` - Returns the number of confirmations of a Completed Transaction
- *
- * # Safety
- * None
- */
-unsigned long long completed_transaction_get_confirmations(TariCompletedTransaction *tx,
-                                                           int *error_out);
-
-/**
  * Gets the reason a TariCompletedTransaction is cancelled, if it is indeed cancelled
  *
  * ## Arguments
@@ -3372,6 +3355,7 @@ struct TariWallet *wallet_create(void *context,
                                  const char *dns_seeds_str,
                                  const char *dns_seed_name_servers_str,
                                  bool use_dns_sec,
+                                 const char *http_base_node,
                                  void (*callback_received_transaction)(void *context,
                                                                        TariPendingInboundTransaction*),
                                  void (*callback_received_transaction_reply)(void *context,
@@ -3665,29 +3649,6 @@ bool wallet_verify_message_signature(struct TariWallet *wallet,
                                      int *error_out);
 
 /**
- * Adds a base node peer to the TariWallet
- *
- * ## Arguments
- * `wallet` - The TariWallet pointer
- * `public_key` - The TariPublicKey pointer
- * `address` - The pointer to a char array
- * `error_out` - Pointer to an int which will be modified to an error code should one occur, may not be null. Functions
- * as an out parameter. Returns false if any pointer argument is null.
- *
- * ## Returns
- * `bool` - Returns if successful or not
- *
- * # Safety
- * None
- */
-bool wallet_set_base_node_peer(struct TariWallet *wallet,
-                               TariPublicKey *public_key,
-                               const char *address,
-                               int *error_out);
-
-/**
- * Gets all seed peers known by the wallet
- *
  * ## Arguments
  * `wallet` - The TariWallet pointer
  * `error_out` - Pointer to an int which will be modified to an error code should one occur, may not be null. Functions
@@ -4503,7 +4464,7 @@ bool wallet_is_recovery_in_progress(struct TariWallet *wallet,
  * None
  */
 bool wallet_start_recovery(struct TariWallet *wallet,
-                           struct TariPublicKeys *base_node_public_keys,
+                           const char *http_base_node,
                            void (*recovery_progress_callback)(void *context,
                                                               uint8_t,
                                                               uint64_t,
@@ -4644,9 +4605,9 @@ void log_debug_message(const char *msg,
  * The ```fee_per_gram_stats_destroy``` method must be called when finished with a TariFeePerGramStats to prevent
  * a memory leak.
  */
-TariFeePerGramStats *wallet_get_fee_per_gram_stats(struct TariWallet *wallet,
-                                                   unsigned int count,
-                                                   int *error_out);
+TariFeePerGramStat *wallet_get_fee_per_gram_stats(struct TariWallet *wallet,
+                                                  unsigned int count,
+                                                  int *error_out);
 
 /**
  * Get length of stats from the TariFeePerGramStats.
@@ -4849,23 +4810,6 @@ struct TariPaymentRecord *payment_records_get_at(const struct TariPaymentRecords
  * None
  */
 void payment_record_destroy(struct TariPaymentRecord *record);
-
-/**
- * Extracts a `NodeId` represented as a vector of bytes wrapped into a `ByteVector`
- *
- * ## Arguments
- * `ptr` - The pointer to a `TariBaseNodeState`
- * `error_out` - Pointer to an int which will be modified to an error code should one occur, may not be null. Functions
- * as an out parameter.
- *
- * ## Returns
- * `*mut ByteVector` - Returns a ByteVector or null if the NodeId is None.
- *
- * # Safety
- * None
- */
-struct ByteVector *basenode_state_get_node_id(struct TariBaseNodeState *ptr,
-                                              int *error_out);
 
 /**
  * Extracts height of th elongest chain from the `TariBaseNodeState`

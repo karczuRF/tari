@@ -93,8 +93,6 @@ use minotari_app_grpc::tari_rpc::{
     RevalidateResponse,
     SendShaAtomicSwapRequest,
     SendShaAtomicSwapResponse,
-    SetBaseNodeRequest,
-    SetBaseNodeResponse,
     SubmitValidatorEvictionProofRequest,
     SubmitValidatorEvictionProofResponse,
     SubmitValidatorNodeExitRequest,
@@ -128,7 +126,7 @@ use tari_common_types::{
     transaction::TxId,
     types::{BlockHash, CompressedPublicKey, PrivateKey, Signature},
 };
-use tari_comms::{multiaddr::Multiaddr, types::CommsPublicKey, CommsNode};
+use tari_comms::{types::CommsPublicKey, CommsNode};
 use tari_core::{
     consensus::{ConsensusBuilderError, ConsensusConstants, ConsensusManager},
     transactions::{
@@ -181,19 +179,23 @@ pub struct WalletGrpcServer {
 impl WalletGrpcServer {
     #[allow(dead_code)]
     pub fn new(wallet: WalletSqlite) -> Result<Self, ConsensusBuilderError> {
-        let rules = ConsensusManager::builder(wallet.network.as_network()).build()?;
         let debouncer = WalletDebouncer::new(
             wallet.output_manager_service.clone(),
             wallet.transaction_service.clone(),
-            wallet.wallet_connectivity.clone(),
             wallet.utxo_scanner_service.clone(),
             wallet.comms.shutdown_signal(),
         );
+        let rules = ConsensusManager::builder(wallet.network.as_network()).build()?;
         Ok(Self {
             wallet,
-            rules,
             debouncer: Arc::new(Mutex::new(debouncer)),
+            rules,
         })
+    }
+
+    fn get_consensus_constants(&self) -> Result<&ConsensusConstants, WalletStorageError> {
+        let height = self.wallet.db.get_last_scanned_height()?.unwrap_or_default();
+        Ok(self.rules.consensus_constants(height))
     }
 
     pub async fn start_balance_debouncer_event_monitor(&self) {
@@ -210,18 +212,6 @@ impl WalletGrpcServer {
 
     fn comms(&self) -> &CommsNode {
         &self.wallet.comms
-    }
-
-    fn get_consensus_constants(&self) -> Result<&ConsensusConstants, WalletStorageError> {
-        // If we don't have the chain metadata, we hope that VNReg consensus constants did not change - worst case, we
-        // spend more than we need to or the transaction is rejected.
-        let height = self
-            .wallet
-            .db
-            .get_chain_metadata()?
-            .map(|m| m.best_block_height())
-            .unwrap_or_default();
-        Ok(self.rules.consensus_constants(height))
     }
 }
 
@@ -240,7 +230,7 @@ impl wallet_server::Wallet for WalletGrpcServer {
         &self,
         _: Request<GetConnectivityRequest>,
     ) -> Result<Response<CheckConnectivityResponse>, Status> {
-        let mut connectivity = self.wallet.wallet_connectivity.clone();
+        let connectivity = self.wallet.wallet_connectivity.clone();
         let status = connectivity.get_connectivity_status();
         Ok(Response::new(CheckConnectivityResponse { status: status as i32 }))
     }
@@ -344,29 +334,6 @@ impl wallet_server::Wallet for WalletGrpcServer {
             interactive_address_emoji: interactive_address.to_emoji_string(),
             one_sided_address_emoji: one_sided_address.to_emoji_string(),
         }))
-    }
-
-    async fn set_base_node(
-        &self,
-        request: Request<SetBaseNodeRequest>,
-    ) -> Result<Response<SetBaseNodeResponse>, Status> {
-        let message = request.into_inner();
-        let public_key = CompressedPublicKey::from_hex(&message.public_key_hex)
-            .map_err(|e| Status::invalid_argument(format!("Base node public key was not a valid pub key: {}", e)))?;
-        let net_address = message
-            .net_address
-            .parse::<Multiaddr>()
-            .map_err(|e| Status::invalid_argument(format!("Base node net address was not valid: {}", e)))?;
-
-        println!("Setting base node peer...");
-        println!("{}::{}", public_key, net_address);
-        let mut wallet = self.wallet.clone();
-        wallet
-            .set_base_node_peer(public_key.clone(), Some(net_address.clone()), None)
-            .await
-            .map_err(|e| Status::internal(format!("{:?}", e)))?;
-
-        Ok(Response::new(SetBaseNodeResponse {}))
     }
 
     async fn get_balance(&self, request: Request<GetBalanceRequest>) -> Result<Response<GetBalanceResponse>, Status> {
@@ -474,18 +441,6 @@ impl wallet_server::Wallet for WalletGrpcServer {
         &self,
         _request: Request<RevalidateRequest>,
     ) -> Result<Response<RevalidateResponse>, Status> {
-        let start = std::time::Instant::now();
-        let mut output_service = self.get_output_manager_service();
-        output_service
-            .revalidate_all_outputs()
-            .await
-            .map_err(|e| Status::unknown(e.to_string()))?;
-        let mut tx_service = self.get_transaction_service();
-        tx_service
-            .revalidate_all_transactions()
-            .await
-            .map_err(|e| Status::unknown(e.to_string()))?;
-        trace!(target: LOG_TARGET, "'revalidate_all_transactions' completed in {:.2?}", start.elapsed());
         Ok(Response::new(RevalidateResponse {}))
     }
 
@@ -493,18 +448,6 @@ impl wallet_server::Wallet for WalletGrpcServer {
         &self,
         _request: Request<ValidateRequest>,
     ) -> Result<Response<ValidateResponse>, Status> {
-        let start = std::time::Instant::now();
-        let mut output_service = self.get_output_manager_service();
-        output_service
-            .validate_txos()
-            .await
-            .map_err(|e| Status::unknown(e.to_string()))?;
-        let mut tx_service = self.get_transaction_service();
-        tx_service
-            .validate_transactions()
-            .await
-            .map_err(|e| Status::unknown(e.to_string()))?;
-        trace!(target: LOG_TARGET, "'validate_all_transactions' completed in {:.2?}", start.elapsed());
         Ok(Response::new(ValidateResponse {}))
     }
 
@@ -2149,22 +2092,18 @@ impl wallet_server::Wallet for WalletGrpcServer {
             "get_fee_per_gram_stats: Incoming GRPC request with count: {}",
             message.block_count
         );
-        let block_count = usize::try_from(message.block_count)
-            .map_err(|_| Status::internal("Count not convert u64 to usize".to_string()))?;
+        let block_count = message.block_count;
 
         let mut transaction_service = self.get_transaction_service();
-        let stats = transaction_service
+        let stat = transaction_service
             .get_fee_per_gram_stats_per_block(block_count)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        let mut fee_stats = Vec::new();
-        for stat in stats.stats {
-            fee_stats.push(FeePerGramStat {
-                average_fee_per_gram: stat.avg_fee_per_gram.as_u64(),
-                min_fee_per_gram: stat.min_fee_per_gram.as_u64(),
-                max_fee_per_gram: stat.max_fee_per_gram.as_u64(),
-            });
-        }
+        let fee_stats = vec![FeePerGramStat {
+            average_fee_per_gram: stat.avg_fee_per_gram.as_u64(),
+            min_fee_per_gram: stat.min_fee_per_gram.as_u64(),
+            max_fee_per_gram: stat.max_fee_per_gram.as_u64(),
+        }];
         Ok(Response::new(GetFeePerGramStatsResponse {
             fee_per_gram_stats: fee_stats,
         }))

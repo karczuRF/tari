@@ -202,6 +202,8 @@ pub enum TransactionServiceError {
     ScriptError(#[from] ScriptError),
     #[error("Tari address error: `{0}`")]
     TariAddressError(#[from] TariAddressError),
+    #[error("Other error: `{0}`")]
+    Other(String),
     #[error("Could not read file {file_path} - {err}.")]
     FileReadError { file_path: PathBuf, err: io::Error },
     #[error("Failed to write to file {file_path} - {err}.")]

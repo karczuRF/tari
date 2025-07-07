@@ -241,14 +241,15 @@ pub enum TransactionServiceRequest {
     GetNumConfirmationsRequired,
     SetNumConfirmationsRequired(u64),
     ValidateTransactions,
-    ReValidateTransactions,
     ReValidateRejectedTransactions,
     /// Returns the fee per gram estimates for the next {count} blocks.
     GetFeePerGramStatsPerBlock {
-        count: usize,
+        count: u64,
     },
     /// Get transaction details for a PayRef (enhanced with multiple recipients)
-    GetPaymentByReference(FixedHash),
+    GetPaymentByReference {
+        payref: FixedHash,
+    },
     /// Get all transactions with their PayRefs (for listing/filtering)
     GetTransactionByPaymentReference(FixedHash),
 }
@@ -462,7 +463,6 @@ impl fmt::Display for TransactionServiceRequest {
             Self::SetNumConfirmationsRequired(_) => write!(f, "SetNumConfirmationsRequired"),
             Self::GetAnyTransaction(t) => write!(f, "GetAnyTransaction({})", t),
             Self::ValidateTransactions => write!(f, "ValidateTransactions"),
-            Self::ReValidateTransactions => write!(f, "ReValidateTransactions"),
             Self::ReValidateRejectedTransactions => write!(f, "ReValidateRejectedTransactions"),
             Self::GetFeePerGramStatsPerBlock { count } => {
                 write!(f, "GetFeePerGramEstimatesPerBlock(count: {})", count,)
@@ -470,7 +470,7 @@ impl fmt::Display for TransactionServiceRequest {
             Self::RegisterCodeTemplate { template_name, .. } => {
                 write!(f, "RegisterCodeTemplate: {}", template_name)
             },
-            Self::GetPaymentByReference(payref) => {
+            Self::GetPaymentByReference { payref } => {
                 write!(f, "GetPaymentByReference({})", payref)
             },
             Self::GetTransactionByPaymentReference(payref) => {
@@ -536,7 +536,7 @@ pub enum TransactionServiceResponse {
     ValidationStarted(OperationId),
     CompletedTransactionValidityChanged,
     ShaAtomicSwapTransactionSent(Box<(TxId, CompressedPublicKey, TransactionOutput)>),
-    FeePerGramStatsPerBlock(FeePerGramStatsResponse),
+    FeePerGramStatsPerBlock(FeePerGramStat),
     /// Response containing PayRefs for a transaction
     TransactionPayRefs(Vec<FixedHash>),
     /// Response containing payment details for a PayRef
@@ -1361,17 +1361,6 @@ impl TransactionServiceHandle {
         }
     }
 
-    pub async fn revalidate_all_transactions(&mut self) -> Result<(), TransactionServiceError> {
-        match self
-            .handle
-            .call(TransactionServiceRequest::ReValidateTransactions)
-            .await??
-        {
-            TransactionServiceResponse::ValidationStarted(_) => Ok(()),
-            _ => Err(TransactionServiceError::UnexpectedApiResponse),
-        }
-    }
-
     pub async fn revalidate_rejected_transactions(&mut self) -> Result<(), TransactionServiceError> {
         match self
             .handle
@@ -1479,8 +1468,8 @@ impl TransactionServiceHandle {
     /// Query the base node for the fee per gram stats of the next {count} blocks.
     pub async fn get_fee_per_gram_stats_per_block(
         &mut self,
-        count: usize,
-    ) -> Result<FeePerGramStatsResponse, TransactionServiceError> {
+        count: u64,
+    ) -> Result<FeePerGramStat, TransactionServiceError> {
         match self
             .handle
             .call(TransactionServiceRequest::GetFeePerGramStatsPerBlock { count })
@@ -1498,7 +1487,7 @@ impl TransactionServiceHandle {
     ) -> Result<Option<PaymentDetails>, TransactionServiceError> {
         match self
             .handle
-            .call(TransactionServiceRequest::GetPaymentByReference(payref))
+            .call(TransactionServiceRequest::GetPaymentByReference { payref })
             .await??
         {
             TransactionServiceResponse::PaymentDetails(details) => Ok(details),
