@@ -1,11 +1,11 @@
 ---
-name: CI
+name: 'CI'
 
 'on':
   workflow_dispatch:
   push:
     branches:
-      - "ci-*"
+      - 'ci-*'
   pull_request:
     types:
       - opened
@@ -13,6 +13,7 @@ name: CI
       - synchronize
   merge_group:
 
+permissions: {}
 env:
   toolchain: stable
   nightly_toolchain: nightly-2025-01-01
